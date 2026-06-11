@@ -95,13 +95,15 @@ class SettingsBody(BaseModel):
     top_k: int
     min_score: float
     scope: str
-    summary_model: str
     summary_backend: str
-    anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     voyage_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
+    qwen_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = ""
+    deepseek_model: str = "deepseek-chat"
+    qwen_model: str = "qwen-turbo"
     embedding_backend: str = "voyage"
     openai_embedding_model: str = "text-embedding-3-large"
     voyage_model: str = "voyage-3.5"
@@ -314,11 +316,13 @@ def create_app() -> FastAPI:
         # shared Memory lock so the rest of the Web UI can continue reading.
         result = summarize_with_source(t["user_msg"], t["assistant_msg"])
         if not result:
-            import os as _os
-            has_a = bool(_os.environ.get("ANTHROPIC_API_KEY", "").strip())
-            has_o = bool(_os.environ.get("OPENAI_API_KEY", "").strip())
-            if not has_a and not has_o:
-                detail = "no API key configured — set ANTHROPIC_API_KEY or OPENAI_API_KEY"
+            from .summarizer import provider_api_key
+            has_any = any(provider_api_key(p) for p in ("openai", "deepseek", "qwen"))
+            if not has_any:
+                detail = (
+                    "no API key configured — set OPENAI_API_KEY, "
+                    "DEEPSEEK_API_KEY or QWEN_API_KEY"
+                )
             else:
                 err = last_error()
                 detail = f"summarizer call failed — {err}" if err else "summarizer call failed"
@@ -352,7 +356,7 @@ def create_app() -> FastAPI:
             return stored.get(key) or os.environ.get(key, "") or ""
 
         raw_backend = _get("SUMMARY_BACKEND", "")
-        backend = raw_backend if raw_backend in ("sdk", "openai") else "sdk"
+        backend = raw_backend if raw_backend in ("openai", "deepseek", "qwen") else "openai"
         raw_emb = _get("EMBEDDING_BACKEND", "voyage")
         embedding_backend = raw_emb if raw_emb in ("voyage", "openai") else "voyage"
         return {
@@ -360,16 +364,19 @@ def create_app() -> FastAPI:
             "top_k": int(_get("TOP_K", "5")),
             "min_score": float(_get("MIN_SCORE", "0.7")),
             "scope": _get("LYNX_MEMORY_SCOPE", "auto"),
-            "summary_model": _get("SUMMARY_MODEL", "claude-haiku-4-5-20251001"),
             "summary_backend": backend,
-            "anthropic_api_key_set": _key_set("ANTHROPIC_API_KEY"),
             "openai_api_key_set": _key_set("OPENAI_API_KEY"),
             "voyage_api_key_set": _key_set("VOYAGE_API_KEY"),
-            "anthropic_api_key_value": _get_key("ANTHROPIC_API_KEY"),
+            "deepseek_api_key_set": _key_set("DEEPSEEK_API_KEY"),
+            "qwen_api_key_set": _key_set("QWEN_API_KEY") or _key_set("DASHSCOPE_API_KEY"),
             "openai_api_key_value": _get_key("OPENAI_API_KEY"),
             "voyage_api_key_value": _get_key("VOYAGE_API_KEY"),
+            "deepseek_api_key_value": _get_key("DEEPSEEK_API_KEY"),
+            "qwen_api_key_value": _get_key("QWEN_API_KEY") or _get_key("DASHSCOPE_API_KEY"),
             "openai_model": _get("OPENAI_MODEL", "gpt-4o-mini"),
             "openai_base_url": _get("OPENAI_BASE_URL", ""),
+            "deepseek_model": _get("DEEPSEEK_MODEL", "deepseek-chat"),
+            "qwen_model": _get("QWEN_MODEL", "qwen-turbo"),
             "embedding_backend": embedding_backend,
             "openai_embedding_model": _get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
             "voyage_model": _get("VOYAGE_MODEL", "voyage-3.5"),
@@ -387,9 +394,10 @@ def create_app() -> FastAPI:
         set_key(str(env_file), "TOP_K", str(max(1, min(50, body.top_k))))
         set_key(str(env_file), "MIN_SCORE", f"{max(0.0, min(1.0, body.min_score)):.2f}")
         set_key(str(env_file), "LYNX_MEMORY_SCOPE", body.scope)
-        set_key(str(env_file), "SUMMARY_MODEL", body.summary_model.strip())
         set_key(str(env_file), "SUMMARY_BACKEND", body.summary_backend)
         set_key(str(env_file), "OPENAI_MODEL", body.openai_model.strip() or "gpt-4o-mini")
+        set_key(str(env_file), "DEEPSEEK_MODEL", body.deepseek_model.strip() or "deepseek-chat")
+        set_key(str(env_file), "QWEN_MODEL", body.qwen_model.strip() or "qwen-turbo")
         set_key(str(env_file), "EMBEDDING_BACKEND", body.embedding_backend)
         set_key(str(env_file), "OPENAI_EMBEDDING_MODEL", body.openai_embedding_model.strip() or "text-embedding-3-large")
         set_key(str(env_file), "VOYAGE_MODEL", body.voyage_model.strip() or "voyage-3.5")
@@ -403,9 +411,10 @@ def create_app() -> FastAPI:
         os.environ["TOP_K"] = str(max(1, min(50, body.top_k)))
         os.environ["MIN_SCORE"] = f"{max(0.0, min(1.0, body.min_score)):.2f}"
         os.environ["LYNX_MEMORY_SCOPE"] = body.scope
-        os.environ["SUMMARY_MODEL"] = body.summary_model.strip()
         os.environ["SUMMARY_BACKEND"] = body.summary_backend
         os.environ["OPENAI_MODEL"] = body.openai_model.strip() or "gpt-4o-mini"
+        os.environ["DEEPSEEK_MODEL"] = body.deepseek_model.strip() or "deepseek-chat"
+        os.environ["QWEN_MODEL"] = body.qwen_model.strip() or "qwen-turbo"
         os.environ["EMBEDDING_BACKEND"] = body.embedding_backend
         os.environ["OPENAI_EMBEDDING_MODEL"] = body.openai_embedding_model.strip() or "text-embedding-3-large"
         os.environ["VOYAGE_MODEL"] = body.voyage_model.strip() or "voyage-3.5"
@@ -414,11 +423,17 @@ def create_app() -> FastAPI:
         else:
             os.environ.pop("OPENAI_BASE_URL", None)
 
+        # legacy anthropic summarization settings — drop if still present
+        for legacy in ("ANTHROPIC_API_KEY", "SUMMARY_MODEL", "LYNX_MEMORY_SUMMARY_MODEL"):
+            unset_key(str(env_file), legacy)
+            os.environ.pop(legacy, None)
+
         # API keys: only write when provided; empty string = clear the key
         for env_key, value in [
-            ("ANTHROPIC_API_KEY", body.anthropic_api_key),
             ("OPENAI_API_KEY", body.openai_api_key),
             ("VOYAGE_API_KEY", body.voyage_api_key),
+            ("DEEPSEEK_API_KEY", body.deepseek_api_key),
+            ("QWEN_API_KEY", body.qwen_api_key),
         ]:
             if value is None:
                 continue  # field not sent — leave unchanged

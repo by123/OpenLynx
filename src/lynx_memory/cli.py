@@ -403,7 +403,6 @@ def _ensure_env_file() -> bool:
     existing.setdefault("TOP_K", "5")
     existing.setdefault("MIN_SCORE", "0.7")
     existing.setdefault("SUMMARY_ENABLED", "1")
-    existing.setdefault("SUMMARY_MODEL", "claude-haiku-4-5-20251001")
     existing.setdefault("SUMMARY_BACKEND", "auto")
 
     lines = [f"{k}={v}" for k, v in existing.items()]
@@ -695,7 +694,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         _print_ok("Python version OK.")
 
-    for mod in ("chromadb", "voyageai", "mcp", "anthropic", "dotenv"):
+    for mod in ("chromadb", "voyageai", "mcp", "openai", "dotenv"):
         try:
             __import__(mod)
             _print_ok(f"import {mod}")

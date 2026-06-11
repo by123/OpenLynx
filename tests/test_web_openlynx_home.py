@@ -25,7 +25,6 @@ class WebOpenLynxHomeTest(unittest.TestCase):
                 payload = settings | {
                     "top_k": 8,
                     "voyage_api_key": "pa-test",
-                    "anthropic_api_key": "",
                     "openai_api_key": "",
                 }
                 response = client.put("/api/settings", json=payload)

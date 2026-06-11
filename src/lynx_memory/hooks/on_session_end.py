@@ -9,8 +9,6 @@ recent unsummarized session in the DB.
 """
 import json
 import os
-import shutil
-import subprocess
 import sys
 import traceback
 
@@ -49,56 +47,6 @@ Be specific with names, paths, tools, and decisions. Write in third person, plai
 Conversation:
 {conversation}"""
 
-DEFAULT_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
-
-
-def _model() -> str:
-    return os.environ.get("LYNX_MEMORY_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL)
-
-
-def _backend() -> str:
-    return os.environ.get("SUMMARY_BACKEND", "auto").strip().lower()
-
-
-def _summarize_via_cli(conversation: str) -> str:
-    """Reuse the user's `claude` CLI session — no API key needed."""
-    cli = shutil.which("claude")
-    if cli is None:
-        return ""
-    env = os.environ.copy()
-    env["LYNX_MEMORY_NO_HOOK"] = "1"
-    try:
-        proc = subprocess.run(
-            [cli, "-p", "--model", _model(), "--output-format", "text",
-             "--no-session-persistence",
-             SUMMARIZE_PROMPT.format(conversation=conversation)],
-            input="", capture_output=True, text=True,
-            timeout=int(os.environ.get("SUMMARY_TIMEOUT", "60")),
-            env=env,
-        )
-    except Exception:
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return (proc.stdout or "").strip()
-
-
-def _summarize_via_sdk(conversation: str) -> str:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return ""
-    try:
-        import anthropic
-        client = anthropic.Anthropic()
-        resp = client.messages.create(
-            model=_model(),
-            max_tokens=800,
-            messages=[{"role": "user", "content": SUMMARIZE_PROMPT.format(conversation=conversation)}],
-        )
-    except Exception:
-        return ""
-    return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
-
-
 def _summarize_via_openai(conversation: str) -> str:
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not key:
@@ -132,27 +80,60 @@ def _summarize_via_openai(conversation: str) -> str:
         return ""
 
 
+def _summarize_via_compat(provider: str, conversation: str) -> str:
+    """Summarize via an OpenAI-compatible provider (deepseek, qwen)."""
+    from ..summarizer import OPENAI_COMPAT_PROVIDERS, provider_api_key
+
+    cfg = OPENAI_COMPAT_PROVIDERS[provider]
+    key = provider_api_key(provider)
+    if not key:
+        return ""
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=key,
+            base_url=os.environ.get(cfg["base_url_env"], "").strip() or cfg["default_base_url"],
+        )
+        model = os.environ.get(cfg["model_env"], cfg["default_model"])
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": SUMMARIZE_PROMPT.format(conversation=conversation)}],
+            max_tokens=800,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        log(f"[on_session_end] {provider} summary failed: {type(e).__name__}: {e}")
+        return ""
+
+
+def _summarize_via_deepseek(conversation: str) -> str:
+    return _summarize_via_compat("deepseek", conversation)
+
+
+def _summarize_via_qwen(conversation: str) -> str:
+    return _summarize_via_compat("qwen", conversation)
+
+
+def _call_provider(provider: str, conversation: str) -> str:
+    if provider == "openai":
+        return _summarize_via_openai(conversation)
+    if provider == "deepseek":
+        return _summarize_via_deepseek(conversation)
+    if provider == "qwen":
+        return _summarize_via_qwen(conversation)
+    return ""
+
+
 def _summarize(conversation: str) -> str:
     """Try the configured summary backend. Return empty string on failure."""
-    backend = _backend()
-    if backend == "openai":
-        out = _summarize_via_openai(conversation)
-        if out:
-            return out
-        return _summarize_via_sdk(conversation)
-    if backend == "sdk":
-        out = _summarize_via_sdk(conversation)
-        if out:
-            return out
-        return _summarize_via_openai(conversation)
+    from ..summarizer import provider_order
 
-    out = _summarize_via_cli(conversation)
-    if out:
-        return out
-    out = _summarize_via_sdk(conversation)
-    if out:
-        return out
-    return _summarize_via_openai(conversation)
+    for provider in provider_order():
+        out = _call_provider(provider, conversation)
+        if out:
+            return out
+    return ""
 
 
 def _main() -> int:

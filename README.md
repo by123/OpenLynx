@@ -24,7 +24,7 @@ a small Python service:
 | Hook              | What it does                                                              |
 | ----------------- | ------------------------------------------------------------------------- |
 | `UserPromptSubmit` | Embeds your prompt and injects the top-K most similar prior turns. When a turn has a summary, the **summary** is injected instead of the raw prose. |
-| `Stop`             | Persists the current user/assistant turn into SQLite + Chroma, then spawns a detached background summarizer that calls the configured API (Anthropic or OpenAI) to extract long-term memories from the turn. |
+| `Stop`             | Persists the current user/assistant turn into SQLite + Chroma, then spawns a detached background summarizer that calls the configured API (OpenAI, DeepSeek, or Qwen) to extract long-term memories from the turn. |
 | `SessionEnd`       | Calls the configured API to produce a coarse memory summary of the whole session. |
 
 Storage:
@@ -32,7 +32,7 @@ Storage:
 - **SQLite** — source of truth for raw turns, per-turn summaries, and session summaries
 - **Chroma** — local vector index over turns + summaries
 - **Voyage AI** (`voyage-3`) — embeddings
-- **Anthropic** (`claude-haiku-4-5-20251001`, default) or **OpenAI** (`gpt-4o-mini`) — per-turn and session summarization (requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
+- **OpenAI** (`gpt-4o-mini`, default), **DeepSeek** (`deepseek-chat`), or **Qwen** (`qwen-turbo`) — per-turn and session summarization (any one of `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `QWEN_API_KEY` is enough)
 
 ## Install
 
@@ -46,8 +46,8 @@ lynx-memory init
 1. Create the shared OpenLynx home at `~/.openlynx/`
 2. Prompt for your `VOYAGE_API_KEY` (get one free at https://www.voyageai.com/)
 3. Write the default `.env` (`MIN_SCORE=0.7`, `SUMMARY_ENABLED=1`,
-   `SUMMARY_MODEL=claude-haiku-4-5-20251001`, `SUMMARY_BACKEND=auto`) —
-   set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to enable per-turn summarization
+   `SUMMARY_BACKEND=auto`) —
+   set `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `QWEN_API_KEY` to enable per-turn summarization
    (configurable later via the Web UI ⚙ Settings panel)
 4. Back up your existing `~/.claude/settings.json` and add the three hooks
 5. Link shared commands and the OpenLynx skill into supported host directories
@@ -154,7 +154,7 @@ in your browser and lets you:
 - Tag turns (e.g. `#work`, `#personal`) and filter by tag
 - Delete a single turn (also clears its embedding from Chroma)
 - See the per-turn **summary** above each turn, with a one-click button to (re)generate it on demand
-- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (Anthropic / OpenAI), model, Top-K, min score, and retrieval scope — changes are saved directly to `~/.openlynx/.env`
+- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (OpenAI / DeepSeek / Qwen), model, Top-K, min score, and retrieval scope — changes are saved directly to `~/.openlynx/.env`
 
 ### Usage
 
@@ -179,7 +179,7 @@ lynx-memory web --no-open
 | **Remove a tag**     | Row removed from `turn_tags`; orphaned tag is GC'd from `tags`              |
 | **Search (keyword)** | SQL `LIKE` over `user_msg` and `assistant_msg` — no embedding call          |
 | **Search (semantic)**| One Voyage embedding per query, then top-K from Chroma                      |
-| **Regenerate summary** | One API call (Anthropic or OpenAI, per `SUMMARY_BACKEND`); writes `summary` / `summary_model` / `summary_ts` back into the `turns` row |
+| **Regenerate summary** | One API call (OpenAI, DeepSeek, or Qwen, per `SUMMARY_BACKEND`); writes `summary` / `summary_model` / `summary_ts` back into the `turns` row |
 
 The server only binds to `127.0.0.1`. Press `Ctrl+C` to stop it.
 
@@ -211,14 +211,17 @@ All optional, set in `~/.openlynx/.env`:
 | `TOP_K`                        | `5`                                  | Max memories injected per prompt           |
 | `MIN_SCORE`                    | `0.7`                                | Cosine similarity floor (0–1)              |
 | `SUMMARY_ENABLED`              | `1`                                  | Set `0`/`false` to disable per-turn summarization |
-| `SUMMARY_BACKEND`              | `auto`                               | `auto` → Anthropic if `ANTHROPIC_API_KEY` is set, else OpenAI; force with `sdk` or `openai` |
-| `SUMMARY_MODEL`                | `claude-haiku-4-5-20251001`          | Anthropic model used for per-turn summaries |
-| `ANTHROPIC_API_KEY`            | —                                    | Required when `SUMMARY_BACKEND=sdk` or `auto` with no OpenAI key |
+| `SUMMARY_BACKEND`              | `auto`                               | `auto` → first provider with a key set (OpenAI → DeepSeek → Qwen); force with `openai`, `deepseek`, or `qwen` |
 | `OPENAI_API_KEY`               | —                                    | Required when `SUMMARY_BACKEND=openai`     |
 | `OPENAI_MODEL`                 | `gpt-4o-mini`                        | OpenAI model used for summarization        |
 | `OPENAI_BASE_URL`              | `https://api.openai.com/v1`          | Override for OpenAI-compatible endpoints   |
+| `DEEPSEEK_API_KEY`             | —                                    | Required when `SUMMARY_BACKEND=deepseek`   |
+| `DEEPSEEK_MODEL`               | `deepseek-chat`                      | DeepSeek model used for summarization      |
+| `DEEPSEEK_BASE_URL`            | `https://api.deepseek.com/v1`        | Override for the DeepSeek endpoint         |
+| `QWEN_API_KEY`                 | —                                    | Required when `SUMMARY_BACKEND=qwen` (`DASHSCOPE_API_KEY` also accepted) |
+| `QWEN_MODEL`                   | `qwen-turbo`                         | Qwen model used for summarization          |
+| `QWEN_BASE_URL`                | DashScope compatible-mode URL        | Override for the Qwen/DashScope endpoint   |
 | `LYNX_MEMORY_DIR`              | `~/.openlynx`                         | Where SQLite + Chroma live                 |
-| `LYNX_MEMORY_SUMMARY_MODEL`    | `claude-haiku-4-5-20251001`           | Anthropic model used by `SessionEnd`       |
 
 ## Optional: MCP server
 
@@ -247,7 +250,7 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 ## Privacy
 
 - All data stays on your machine in `~/.openlynx/`.
-- Outbound calls: **Voyage AI** for embeddings (your prompt text); **Anthropic** or **OpenAI**
+- Outbound calls: **Voyage AI** for embeddings (your prompt text); **OpenAI**, **DeepSeek**, or **Qwen**
   for per-turn and session summaries (requires an API key — set via `.env` or the Web UI ⚙ Settings panel).
 - Set `SUMMARY_ENABLED=0` if you don't want per-turn summaries to leave the box.
 - Set `LYNX_MEMORY_DIR` to encrypt at rest with whatever filesystem-level

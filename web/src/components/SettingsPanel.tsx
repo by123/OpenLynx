@@ -2,13 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppSettings } from "../types";
 
-const ANTHROPIC_MODELS = [
-  // Latest generation — recommended for summarization
-  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5  ★ fast · low cost" },
-  { value: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6" },
-  { value: "claude-opus-4-7",           label: "Claude Opus 4.7  · premium" },
-];
-
 const OPENAI_MODELS = [
   // GPT-5.x series (Responses API)
   { value: "gpt-5.4-nano",  label: "GPT-5.4 nano  ★ fast · low cost" },
@@ -27,9 +20,22 @@ const OPENAI_MODELS = [
   { value: "o3",            label: "o3  · reasoning · premium" },
 ];
 
+const DEEPSEEK_MODELS = [
+  { value: "deepseek-chat",     label: "DeepSeek Chat (V3)  ★ fast · low cost" },
+  { value: "deepseek-reasoner", label: "DeepSeek Reasoner (R1)  · reasoning" },
+];
+
+const QWEN_MODELS = [
+  { value: "qwen-turbo", label: "Qwen Turbo  ★ fast · low cost" },
+  { value: "qwen-flash", label: "Qwen Flash  · fastest · lowest cost" },
+  { value: "qwen-plus",  label: "Qwen Plus" },
+  { value: "qwen-max",   label: "Qwen Max  · premium" },
+];
+
 const BACKEND_BASE_URLS: Record<string, string> = {
-  sdk: "https://api.anthropic.com",
   openai: "https://api.openai.com/v1",
+  deepseek: "https://api.deepseek.com/v1",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 };
 
 const OPENAI_EMBEDDING_MODELS = [
@@ -50,13 +56,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   top_k: 5,
   min_score: 0.7,
   scope: "auto",
-  summary_model: ANTHROPIC_MODELS[0].value,
-  summary_backend: "sdk",
-  anthropic_api_key_set: false,
+  summary_backend: "openai",
   openai_api_key_set: false,
   voyage_api_key_set: false,
+  deepseek_api_key_set: false,
+  qwen_api_key_set: false,
   openai_model: "gpt-5.4-nano",
   openai_base_url: "",
+  deepseek_model: "deepseek-chat",
+  qwen_model: "qwen-turbo",
   embedding_backend: "voyage",
   openai_embedding_model: "text-embedding-3-large",
   voyage_model: "voyage-3.5",
@@ -113,9 +121,10 @@ function KeyRow({
 
 export function SettingsPanel({ open, onClose }: Props) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [anthropicKey, setAnthropicKey] = useState<string | null>(null);
   const [openaiKey, setOpenaiKey] = useState<string | null>(null);
   const [voyageKey, setVoyageKey] = useState<string | null>(null);
+  const [deepseekKey, setDeepseekKey] = useState<string | null>(null);
+  const [qwenKey, setQwenKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -127,16 +136,18 @@ export function SettingsPanel({ open, onClose }: Props) {
     setLoading(true);
     setError(null);
     setSaved(false);
-    setAnthropicKey(null);
     setOpenaiKey(null);
     setVoyageKey(null);
+    setDeepseekKey(null);
+    setQwenKey(null);
     api
       .getSettings()
       .then((s) => {
         setSettings(s);
-        setAnthropicKey(s.anthropic_api_key_value ?? null);
         setOpenaiKey(s.openai_api_key_value ?? null);
         setVoyageKey(s.voyage_api_key_value ?? null);
+        setDeepseekKey(s.deepseek_api_key_value ?? null);
+        setQwenKey(s.qwen_api_key_value ?? null);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -158,16 +169,18 @@ export function SettingsPanel({ open, onClose }: Props) {
     try {
       const payload: AppSettings = {
         ...settings,
-        anthropic_api_key: anthropicKey ?? undefined,
         openai_api_key: openaiKey ?? undefined,
         voyage_api_key: voyageKey ?? undefined,
+        deepseek_api_key: deepseekKey ?? undefined,
+        qwen_api_key: qwenKey ?? undefined,
       };
       await api.putSettings(payload);
       setSettings((s) => ({
         ...s,
-        anthropic_api_key_set: anthropicKey ? anthropicKey.trim().length > 0 : s.anthropic_api_key_set,
         openai_api_key_set: openaiKey ? openaiKey.trim().length > 0 : s.openai_api_key_set,
         voyage_api_key_set: voyageKey ? voyageKey.trim().length > 0 : s.voyage_api_key_set,
+        deepseek_api_key_set: deepseekKey ? deepseekKey.trim().length > 0 : s.deepseek_api_key_set,
+        qwen_api_key_set: qwenKey ? qwenKey.trim().length > 0 : s.qwen_api_key_set,
       }));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -178,12 +191,14 @@ export function SettingsPanel({ open, onClose }: Props) {
     }
   };
 
-  const isAnthropicBackend = settings.summary_backend === "sdk";
   const isOpenAIBackend = settings.summary_backend === "openai";
+  const isDeepSeekBackend = settings.summary_backend === "deepseek";
+  const isQwenBackend = settings.summary_backend === "qwen";
 
   const keyMissing = settings.summary_enabled && (
-    (isAnthropicBackend && !settings.anthropic_api_key_set && !anthropicKey?.trim()) ||
-    (isOpenAIBackend && !settings.openai_api_key_set && !openaiKey?.trim())
+    (isOpenAIBackend && !settings.openai_api_key_set && !openaiKey?.trim()) ||
+    (isDeepSeekBackend && !settings.deepseek_api_key_set && !deepseekKey?.trim()) ||
+    (isQwenBackend && !settings.qwen_api_key_set && !qwenKey?.trim())
   );
 
   if (!open) return null;
@@ -365,46 +380,11 @@ export function SettingsPanel({ open, onClose }: Props) {
                   onChange={(e) => setSettings((s) => ({ ...s, summary_backend: e.target.value }))}
                   disabled={!settings.summary_enabled}
                 >
-                  <option value="sdk">Anthropic</option>
                   <option value="openai">OpenAI</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="qwen">Qwen</option>
                 </select>
               </div>
-
-              {/* Anthropic branch */}
-              {isAnthropicBackend && (
-                <>
-                  <div className="settings-row">
-                    <div className="settings-label">
-                      <span>Base URL</span>
-                    </div>
-                    <span className="settings-static">{BACKEND_BASE_URLS.sdk}</span>
-                  </div>
-                  <div className="settings-row">
-                    <div className="settings-label">
-                      <span>Model</span>
-                      <span className="settings-hint">Anthropic model used for summarization</span>
-                    </div>
-                    <select
-                      className="settings-select"
-                      value={settings.summary_model}
-                      onChange={(e) => setSettings((s) => ({ ...s, summary_model: e.target.value }))}
-                      disabled={!settings.summary_enabled}
-                    >
-                      {ANTHROPIC_MODELS.map((m) => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <KeyRow
-                    label="Anthropic API key"
-                    isSet={settings.anthropic_api_key_set}
-                    pendingKey={anthropicKey}
-                    onChange={setAnthropicKey}
-                    onClear={() => setAnthropicKey("")}
-                    placeholder="sk-ant-…"
-                  />
-                </>
-              )}
 
               {/* OpenAI branch */}
               {isOpenAIBackend && (
@@ -437,6 +417,78 @@ export function SettingsPanel({ open, onClose }: Props) {
                     pendingKey={openaiKey}
                     onChange={setOpenaiKey}
                     onClear={() => setOpenaiKey("")}
+                    placeholder="sk-…"
+                  />
+                </>
+              )}
+
+              {/* DeepSeek branch */}
+              {isDeepSeekBackend && (
+                <>
+                  <div className="settings-row">
+                    <div className="settings-label">
+                      <span>Model</span>
+                      <span className="settings-hint">DeepSeek model used for summarization</span>
+                    </div>
+                    <select
+                      className="settings-select"
+                      value={settings.deepseek_model}
+                      onChange={(e) => setSettings((s) => ({ ...s, deepseek_model: e.target.value }))}
+                      disabled={!settings.summary_enabled}
+                    >
+                      {DEEPSEEK_MODELS.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <div className="settings-label">
+                      <span>Base URL</span>
+                    </div>
+                    <span className="settings-static">{BACKEND_BASE_URLS.deepseek}</span>
+                  </div>
+                  <KeyRow
+                    label="DeepSeek API key"
+                    isSet={settings.deepseek_api_key_set}
+                    pendingKey={deepseekKey}
+                    onChange={setDeepseekKey}
+                    onClear={() => setDeepseekKey("")}
+                    placeholder="sk-…"
+                  />
+                </>
+              )}
+
+              {/* Qwen branch */}
+              {isQwenBackend && (
+                <>
+                  <div className="settings-row">
+                    <div className="settings-label">
+                      <span>Model</span>
+                      <span className="settings-hint">Qwen model used for summarization</span>
+                    </div>
+                    <select
+                      className="settings-select"
+                      value={settings.qwen_model}
+                      onChange={(e) => setSettings((s) => ({ ...s, qwen_model: e.target.value }))}
+                      disabled={!settings.summary_enabled}
+                    >
+                      {QWEN_MODELS.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <div className="settings-label">
+                      <span>Base URL</span>
+                    </div>
+                    <span className="settings-static">{BACKEND_BASE_URLS.qwen}</span>
+                  </div>
+                  <KeyRow
+                    label="Qwen API key"
+                    isSet={settings.qwen_api_key_set}
+                    pendingKey={qwenKey}
+                    onChange={setQwenKey}
+                    onClear={() => setQwenKey("")}
                     placeholder="sk-…"
                   />
                 </>

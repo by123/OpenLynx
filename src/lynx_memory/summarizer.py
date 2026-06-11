@@ -4,19 +4,25 @@ Generates a compact summary for a single (user, assistant) turn so memory
 recall can inject summaries into context instead of full prose.
 
 Backend selection (SUMMARY_BACKEND):
-  sdk    → Anthropic SDK (requires ANTHROPIC_API_KEY)
-  openai → OpenAI SDK    (requires OPENAI_API_KEY)
-  auto   → try Anthropic first if ANTHROPIC_API_KEY is set, else try OpenAI
-           if OPENAI_API_KEY is set (default when SUMMARY_BACKEND is unset)
+  openai   → OpenAI SDK    (requires OPENAI_API_KEY)
+  deepseek → DeepSeek API  (requires DEEPSEEK_API_KEY)
+  qwen     → Qwen / DashScope API (requires QWEN_API_KEY or DASHSCOPE_API_KEY)
+  auto     → first provider with an API key set, in order
+             openai → deepseek → qwen
+             (default when SUMMARY_BACKEND is unset)
 
 Env vars:
   - SUMMARY_ENABLED=1          set "0"/"false" to disable
-  - SUMMARY_BACKEND            sdk | openai | auto  (default: auto)
-  - SUMMARY_MODEL              Anthropic model (default claude-haiku-4-5-20251001)
-  - ANTHROPIC_API_KEY          required for sdk backend
+  - SUMMARY_BACKEND            openai | deepseek | qwen | auto  (default: auto)
   - OPENAI_API_KEY             required for openai backend
   - OPENAI_MODEL               model for OpenAI backend (default gpt-4o-mini)
   - OPENAI_BASE_URL            optional base URL for OpenAI-compatible APIs
+  - DEEPSEEK_API_KEY           required for deepseek backend
+  - DEEPSEEK_MODEL             model for DeepSeek backend (default deepseek-chat)
+  - DEEPSEEK_BASE_URL          optional override (default https://api.deepseek.com/v1)
+  - QWEN_API_KEY               required for qwen backend (DASHSCOPE_API_KEY also accepted)
+  - QWEN_MODEL                 model for Qwen backend (default qwen-turbo)
+  - QWEN_BASE_URL              optional override (default DashScope compatible-mode endpoint)
 """
 from __future__ import annotations
 
@@ -26,7 +32,45 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+# OpenAI-compatible chat-completions providers (no Responses API).
+OPENAI_COMPAT_PROVIDERS = {
+    "deepseek": {
+        "key_envs": ("DEEPSEEK_API_KEY",),
+        "model_env": "DEEPSEEK_MODEL",
+        "default_model": "deepseek-chat",
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        "default_base_url": "https://api.deepseek.com/v1",
+    },
+    "qwen": {
+        "key_envs": ("QWEN_API_KEY", "DASHSCOPE_API_KEY"),
+        "model_env": "QWEN_MODEL",
+        "default_model": "qwen-turbo",
+        "base_url_env": "QWEN_BASE_URL",
+        "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+}
+
+_PROVIDER_KEY_ENVS = {
+    "openai": ("OPENAI_API_KEY",),
+    "deepseek": OPENAI_COMPAT_PROVIDERS["deepseek"]["key_envs"],
+    "qwen": OPENAI_COMPAT_PROVIDERS["qwen"]["key_envs"],
+}
+
+_PROVIDER_ORDER = ("openai", "deepseek", "qwen")
+
+_BACKEND_ALIASES = {
+    "openai": "openai",
+    "deepseek": "deepseek",
+    "qwen": "qwen",
+}
+
+
+def provider_api_key(provider: str) -> str:
+    for env in _PROVIDER_KEY_ENVS.get(provider, ()):
+        v = os.environ.get(env, "").strip()
+        if v:
+            return v
+    return ""
 
 _SYSTEM = """You are an AI memory retrieval assistant. Extract memories worth preserving long-term from the following conversation.
 
@@ -53,10 +97,6 @@ Output the memory summary body directly, with no surrounding explanation."""
 def is_enabled() -> bool:
     v = os.environ.get("SUMMARY_ENABLED", "1").strip().lower()
     return v not in ("0", "false", "off", "no", "")
-
-
-def model_name() -> str:
-    return os.environ.get("SUMMARY_MODEL", DEFAULT_MODEL)
 
 
 def _backend() -> str:
@@ -88,48 +128,6 @@ def _log_failure(provider: str, exc: BaseException) -> None:
 
 def last_error() -> str:
     return _LAST_ERROR
-
-
-def _sdk_client():
-    import anthropic
-
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
-    return anthropic.Anthropic(api_key=key)
-
-
-def _summarize_via_sdk(user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
-    try:
-        client = _sdk_client()
-    except Exception as exc:
-        _log_failure("anthropic client init", exc)
-        return None
-    content = _conversation_body(user_msg, assistant_msg)
-    model = model_name()
-    try:
-        resp = client.messages.create(
-            model=model,
-            max_tokens=600,
-            system=[
-                {
-                    "type": "text",
-                    "text": _SYSTEM,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": content}],
-        )
-    except Exception as exc:
-        _log_failure("anthropic request", exc)
-        return None
-    parts = []
-    for block in resp.content or []:
-        t = getattr(block, "text", None)
-        if t:
-            parts.append(t)
-    text = "\n".join(parts).strip()
-    return (text, "anthropic", model) if text else None
 
 
 def _summarize_via_openai(user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
@@ -174,11 +172,71 @@ def _summarize_via_openai(user_msg: str, assistant_msg: str) -> Optional[Summary
         return None
 
 
+def _summarize_via_compat(provider: str, user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
+    """Summarize via an OpenAI-compatible chat-completions provider (deepseek, qwen)."""
+    cfg = OPENAI_COMPAT_PROVIDERS[provider]
+    try:
+        from openai import OpenAI as _OpenAI
+    except ImportError as exc:
+        _log_failure(f"{provider} import", exc)
+        return None
+    key = provider_api_key(provider)
+    if not key:
+        return None
+    base_url = os.environ.get(cfg["base_url_env"], "").strip() or cfg["default_base_url"]
+    model = os.environ.get(cfg["model_env"], cfg["default_model"])
+    content = _conversation_body(user_msg, assistant_msg)
+    try:
+        client = _OpenAI(api_key=key, base_url=base_url)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": content},
+            ],
+            max_tokens=600,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return (text, provider, model) if text else None
+    except Exception as exc:
+        _log_failure(f"{provider} request", exc)
+        return None
+
+
+def _summarize_via_deepseek(user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
+    return _summarize_via_compat("deepseek", user_msg, assistant_msg)
+
+
+def _summarize_via_qwen(user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
+    return _summarize_via_compat("qwen", user_msg, assistant_msg)
+
+
+def _call_provider(provider: str, user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
+    if provider == "openai":
+        return _summarize_via_openai(user_msg, assistant_msg)
+    if provider == "deepseek":
+        return _summarize_via_deepseek(user_msg, assistant_msg)
+    if provider == "qwen":
+        return _summarize_via_qwen(user_msg, assistant_msg)
+    return None
+
+
+def provider_order() -> list:
+    """Provider try-order: the forced SUMMARY_BACKEND first, then the rest."""
+    order = list(_PROVIDER_ORDER)
+    preferred = _BACKEND_ALIASES.get(_backend())
+    if preferred:
+        order.remove(preferred)
+        order.insert(0, preferred)
+    return order
+
+
 def summarize_with_source(user_msg: str, assistant_msg: str) -> Optional[SummaryResult]:
     """Return (summary, source, model), or None if disabled / not configured.
 
-    Backend is selected by SUMMARY_BACKEND (sdk | openai | auto).
-    In auto mode, tries Anthropic if ANTHROPIC_API_KEY is set, else OpenAI.
+    Backend is selected by SUMMARY_BACKEND (openai | deepseek | qwen | auto).
+    The forced backend is tried first; otherwise the first provider with an
+    API key set wins (openai → deepseek → qwen).
     """
     if not is_enabled():
         return None
@@ -187,27 +245,9 @@ def summarize_with_source(user_msg: str, assistant_msg: str) -> Optional[Summary
     if not user_msg or not assistant_msg:
         return None
 
-    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
-    has_openai = bool(os.environ.get("OPENAI_API_KEY", "").strip())
-
-    backend = _backend()
-    if backend == "sdk":
-        if has_anthropic:
-            return _summarize_via_sdk(user_msg, assistant_msg)
-        if has_openai:
-            return _summarize_via_openai(user_msg, assistant_msg)
-        return None
-    if backend == "openai":
-        if has_openai:
-            return _summarize_via_openai(user_msg, assistant_msg)
-        if has_anthropic:
-            return _summarize_via_sdk(user_msg, assistant_msg)
-        return None
-    # auto: try Anthropic first, then OpenAI
-    if has_anthropic:
-        return _summarize_via_sdk(user_msg, assistant_msg)
-    if has_openai:
-        return _summarize_via_openai(user_msg, assistant_msg)
+    for provider in provider_order():
+        if provider_api_key(provider):
+            return _call_provider(provider, user_msg, assistant_msg)
     return None
 
 

@@ -63,11 +63,111 @@ class SummaryBackendTest(unittest.TestCase):
         ), mock.patch.object(
             on_session_end, "_summarize_via_openai", return_value="session summary"
         ) as openai_call, mock.patch.object(
-            on_session_end, "_summarize_via_sdk", return_value=""
-        ) as sdk_call:
+            on_session_end, "_summarize_via_deepseek", return_value=""
+        ) as deepseek_call:
             self.assertEqual(on_session_end._summarize("conversation"), "session summary")
             openai_call.assert_called_once_with("conversation")
-            sdk_call.assert_not_called()
+            deepseek_call.assert_not_called()
+
+    def test_turn_summary_deepseek_backend_uses_deepseek_key(self):
+        with mock.patch.dict(
+            os.environ,
+            {"SUMMARY_BACKEND": "deepseek", "DEEPSEEK_API_KEY": "sk-test"},
+            clear=True,
+        ), mock.patch.object(
+            summarizer,
+            "_summarize_via_deepseek",
+            return_value=("summary", "deepseek", "deepseek-chat"),
+        ) as deepseek_call:
+            self.assertEqual(
+                summarizer.summarize_with_source("user", "assistant"),
+                ("summary", "deepseek", "deepseek-chat"),
+            )
+            deepseek_call.assert_called_once_with("user", "assistant")
+
+    def test_turn_summary_qwen_accepts_dashscope_key(self):
+        with mock.patch.dict(
+            os.environ,
+            {"SUMMARY_BACKEND": "qwen", "DASHSCOPE_API_KEY": "sk-test"},
+            clear=True,
+        ), mock.patch.object(
+            summarizer,
+            "_summarize_via_qwen",
+            return_value=("summary", "qwen", "qwen-turbo"),
+        ) as qwen_call:
+            self.assertEqual(
+                summarizer.summarize_with_source("user", "assistant"),
+                ("summary", "qwen", "qwen-turbo"),
+            )
+            qwen_call.assert_called_once_with("user", "assistant")
+
+    def test_auto_mode_works_without_anthropic_key(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DEEPSEEK_API_KEY": "sk-test"},
+            clear=True,
+        ), mock.patch.object(
+            summarizer,
+            "_summarize_via_deepseek",
+            return_value=("summary", "deepseek", "deepseek-chat"),
+        ):
+            self.assertEqual(
+                summarizer.summarize_with_source("user", "assistant"),
+                ("summary", "deepseek", "deepseek-chat"),
+            )
+
+    def test_deepseek_uses_chat_completions_with_default_base_url(self):
+        seen_kwargs = {}
+        seen_create = {}
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                seen_create.update(kwargs)
+
+                class Msg:
+                    content = "summary"
+
+                class Choice:
+                    message = Msg()
+
+                class Resp:
+                    choices = [Choice()]
+
+                return Resp()
+
+        class FakeChat:
+            completions = FakeCompletions()
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                seen_kwargs.update(kwargs)
+                self.chat = FakeChat()
+
+        with mock.patch.dict(
+            os.environ,
+            {"DEEPSEEK_API_KEY": "sk-test"},
+            clear=True,
+        ), mock.patch("openai.OpenAI", FakeOpenAI):
+            self.assertEqual(
+                summarizer._summarize_via_deepseek("user", "assistant"),
+                ("summary", "deepseek", "deepseek-chat"),
+            )
+            self.assertEqual(seen_kwargs["base_url"], "https://api.deepseek.com/v1")
+            self.assertEqual(seen_create["model"], "deepseek-chat")
+
+    def test_session_summary_qwen_backend_uses_qwen(self):
+        with mock.patch.dict(
+            os.environ,
+            {"SUMMARY_BACKEND": "qwen", "QWEN_API_KEY": "sk-test"},
+            clear=True,
+        ), mock.patch.object(
+            on_session_end, "_summarize_via_qwen", return_value="session summary"
+        ) as qwen_call, mock.patch.object(
+            on_session_end, "_summarize_via_openai", return_value=""
+        ) as openai_call:
+            self.assertEqual(on_session_end._summarize("conversation"), "session summary")
+            qwen_call.assert_called_once_with("conversation")
+            openai_call.assert_not_called()
 
     def test_store_env_overrides_inherited_environment(self):
         with tempfile.TemporaryDirectory() as td:

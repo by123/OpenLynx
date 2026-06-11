@@ -20,7 +20,7 @@ Claude   : 结合你有蛋蛋（金色边牧）这个大运动量的伙伴，可
 | Hook                | 作用                                                  |
 | ------------------- | ----------------------------------------------------- |
 | `UserPromptSubmit`  | 把你的 prompt 向量化，注入最相似的 K 条历史对话；命中的 turn 若已有摘要，注入的是**摘要**而不是原文 |
-| `Stop`              | 把本轮 user/assistant 对话存入 SQLite + Chroma，并 **detached fork** 一个后台摘要进程，通过配置好的 API（Anthropic 或 OpenAI）从本轮对话中提取长期记忆 |
+| `Stop`              | 把本轮 user/assistant 对话存入 SQLite + Chroma，并 **detached fork** 一个后台摘要进程，通过配置好的 API（OpenAI、DeepSeek 或 Qwen）从本轮对话中提取长期记忆 |
 | `SessionEnd`        | 调用配置的 API，给整段会话生成一份粗粒度记忆摘要       |
 
 存储方式：
@@ -28,7 +28,7 @@ Claude   : 结合你有蛋蛋（金色边牧）这个大运动量的伙伴，可
 - **SQLite** — 原始对话、每轮摘要、会话级摘要的真实数据源
 - **Chroma** — 本地向量索引（turns + 摘要）
 - **Voyage AI** (`voyage-3`) — 文本向量化服务
-- **Anthropic**（默认，`claude-haiku-4-5-20251001`）或 **OpenAI**（`gpt-4o-mini`）— 每轮摘要与会话摘要，需配置 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`
+- **OpenAI**（默认，`gpt-4o-mini`）、**DeepSeek**（`deepseek-chat`）或 **Qwen**（`qwen-turbo`）— 每轮摘要与会话摘要，配置 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`QWEN_API_KEY` 任意一个即可
 
 ## 安装
 
@@ -41,9 +41,8 @@ lynx-memory init
 
 1. 创建共享的 OpenLynx 主目录 `~/.openlynx/`
 2. 提示你输入 `VOYAGE_API_KEY`（免费申请：https://www.voyageai.com/）
-3. 写入默认配置：`MIN_SCORE=0.7`、`SUMMARY_ENABLED=1`、
-   `SUMMARY_MODEL=claude-haiku-4-5-20251001`、`SUMMARY_BACKEND=auto`；
-   设置 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 以启用每轮摘要
+3. 写入默认配置：`MIN_SCORE=0.7`、`SUMMARY_ENABLED=1`、`SUMMARY_BACKEND=auto`；
+   设置 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY` 或 `QWEN_API_KEY` 以启用每轮摘要
    （也可以之后在 Web UI ⚙ 设置面板里配置）
 4. 备份现有的 `~/.claude/settings.json`，注入三个 hook
 5. 把共享 commands 和 OpenLynx skill 链接到支持的宿主目录
@@ -148,7 +147,7 @@ lynx-memory uninstall      卸载 hooks、slash 命令与 skill 链接（保留�
 - 自动生成**类型化标签**，区分 `user` / `project` / `module` / `custom`
 - 删除单条 turn（同时清掉 Chroma 里的向量）
 - 每条 turn 顶部显示**摘要**，可一键"重新生成"
-- 点击右上角 **⚙ 设置图标** 打开**设置面板**，在浏览器里直接配置所有选项：API Key、摘要后端（Anthropic / OpenAI）、模型、Top-K、相似度阈值、召回范围——保存后自动写入 `~/.openlynx/.env`
+- 点击右上角 **⚙ 设置图标** 打开**设置面板**，在浏览器里直接配置所有选项：API Key、摘要后端（OpenAI / DeepSeek / Qwen）、模型、Top-K、相似度阈值、召回范围——保存后自动写入 `~/.openlynx/.env`
 
 ### 使用方式
 
@@ -175,7 +174,7 @@ UI 上的操作直接落库：
 | **移除标签** | 删 `turn_tags`；如果该标签没人用了，再清 `tags` 里的孤立行            |
 | **关键字搜索**| SQL `LIKE` 直查 `user_msg` / `assistant_msg`，不调用 embedding 接口 |
 | **语义搜索** | 调一次 Voyage 算 query 向量，再从 Chroma 取 top-K                     |
-| **重新生成摘要** | 调一次 API（Anthropic 或 OpenAI，取决于 `SUMMARY_BACKEND`），把 `summary` / `summary_model` / `summary_ts` 写回 `turns` |
+| **重新生成摘要** | 调一次 API（OpenAI、DeepSeek 或 Qwen，取决于 `SUMMARY_BACKEND`），把 `summary` / `summary_model` / `summary_ts` 写回 `turns` |
 
 服务只监听 `127.0.0.1`，按 `Ctrl+C` 关闭。
 
@@ -228,14 +227,17 @@ lynx-memory init-project
 | `TOP_K`                         | `5`                                 | 每次注入的最多记忆条数            |
 | `MIN_SCORE`                     | `0.7`                               | 相似度下限（0–1）                 |
 | `SUMMARY_ENABLED`               | `1`                                 | 设为 `0`/`false` 关闭每轮摘要     |
-| `SUMMARY_BACKEND`               | `auto`                              | `auto`：有 `ANTHROPIC_API_KEY` 时走 Anthropic，否则走 OpenAI；可强制 `sdk` 或 `openai` |
-| `SUMMARY_MODEL`                 | `claude-haiku-4-5-20251001`         | Anthropic 每轮摘要用的模型        |
-| `ANTHROPIC_API_KEY`             | —                                   | `SUMMARY_BACKEND=sdk` 或 `auto`（无 OpenAI key）时必填 |
+| `SUMMARY_BACKEND`               | `auto`                              | `auto`：按 OpenAI → DeepSeek → Qwen 顺序使用第一个配置了 key 的后端；可强制 `openai`、`deepseek` 或 `qwen` |
 | `OPENAI_API_KEY`                | —                                   | `SUMMARY_BACKEND=openai` 时必填   |
 | `OPENAI_MODEL`                  | `gpt-4o-mini`                       | OpenAI 摘要用的模型               |
 | `OPENAI_BASE_URL`               | `https://api.openai.com/v1`         | 兼容 OpenAI 协议的自定义端点      |
+| `DEEPSEEK_API_KEY`              | —                                   | `SUMMARY_BACKEND=deepseek` 时必填 |
+| `DEEPSEEK_MODEL`                | `deepseek-chat`                     | DeepSeek 摘要用的模型             |
+| `DEEPSEEK_BASE_URL`             | `https://api.deepseek.com/v1`       | DeepSeek 端点覆盖                 |
+| `QWEN_API_KEY`                  | —                                   | `SUMMARY_BACKEND=qwen` 时必填（也接受 `DASHSCOPE_API_KEY`） |
+| `QWEN_MODEL`                    | `qwen-turbo`                        | Qwen 摘要用的模型                 |
+| `QWEN_BASE_URL`                 | DashScope 兼容模式地址              | Qwen/DashScope 端点覆盖           |
 | `LYNX_MEMORY_DIR`              | `~/.openlynx`                        | SQLite + Chroma 数据目录          |
-| `LYNX_MEMORY_SUMMARY_MODEL`    | `claude-haiku-4-5-20251001`          | `SessionEnd` 会话摘要用的 Anthropic 模型 |
 
 ## 可选：MCP 服务
 
@@ -264,7 +266,7 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 ## 隐私说明
 
 - 所有数据保存在你本机的 `~/.openlynx/`
-- 外部请求：**Voyage AI**（embedding，包含你的 prompt 文本）；**Anthropic** 或 **OpenAI**
+- 外部请求：**Voyage AI**（embedding，包含你的 prompt 文本）；**OpenAI**、**DeepSeek** 或 **Qwen**
   用于每轮和会话级摘要（需配置 API Key，可通过 `.env` 或 Web UI ⚙ 设置面板配置）
 - 不想让每轮内容被发去做摘要的话，设 `SUMMARY_ENABLED=0`
 - 想加密静态数据的话，把 `LYNX_MEMORY_DIR` 指向一个加密卷即可

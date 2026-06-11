@@ -90,21 +90,25 @@ export interface AppSettings {
   top_k: number;
   min_score: number;
   scope: string;
-  summary_model: string;
   summary_backend: string;
-  anthropic_api_key_set: boolean;
   openai_api_key_set: boolean;
   voyage_api_key_set: boolean;
+  deepseek_api_key_set: boolean;
+  qwen_api_key_set: boolean;
   openai_model: string;
   openai_base_url: string;
+  deepseek_model: string;
+  qwen_model: string;
   embedding_backend: string;
   openai_embedding_model: string;
   voyage_model: string;
   // actual key values returned from server and sent on save
-  anthropic_api_key_value?: string;
   openai_api_key_value?: string;
   voyage_api_key_value?: string;
-  anthropic_api_key?: string;
+  deepseek_api_key_value?: string;
+  qwen_api_key_value?: string;
   openai_api_key?: string;
   voyage_api_key?: string;
+  deepseek_api_key?: string;
+  qwen_api_key?: string;
 }
