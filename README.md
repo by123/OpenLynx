@@ -43,14 +43,34 @@ lynx-memory init
 
 `init` will:
 
-1. Create `~/.claude/lynx-memory/` (data directory)
+1. Create the shared OpenLynx home at `~/.openlynx/`
 2. Prompt for your `VOYAGE_API_KEY` (get one free at https://www.voyageai.com/)
 3. Write the default `.env` (`MIN_SCORE=0.7`, `SUMMARY_ENABLED=1`,
    `SUMMARY_MODEL=claude-haiku-4-5-20251001`, `SUMMARY_BACKEND=auto`) —
    set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to enable per-turn summarization
    (configurable later via the Web UI ⚙ Settings panel)
 4. Back up your existing `~/.claude/settings.json` and add the three hooks
-5. Print verification steps
+5. Link shared commands and the OpenLynx skill into supported host directories
+6. Print verification steps
+
+If a legacy `~/.claude/lynx-memory/` store exists and `~/.openlynx/` does not,
+`init` migrates it to `~/.openlynx/` before installing hooks. If both exist,
+OpenLynx uses `~/.openlynx/` and leaves the legacy directory untouched.
+
+The shared home is host-neutral:
+
+```text
+~/.openlynx/
+  .env
+  db/
+  commands/
+  skills/
+```
+
+Claude Code and Codex keep their own hook configuration files, but reusable
+OpenLynx files are linked from this shared home into host directories such as
+`~/.claude/commands/`, `~/.claude/skills/`, `~/.codex/commands/`, and
+`~/.codex/skills/`.
 
 Then open a fresh Claude Code session, chat for a few turns, and run:
 
@@ -79,12 +99,12 @@ process for hooks to take effect** — they're loaded at session start.
 
 A turn typed in Claude Code can be recalled inside Codex (and vice versa)
 because both write to the same SQLite + Chroma store at
-`~/.claude/lynx-memory/`.
+`~/.openlynx/`.
 
 ## CLI
 
 ```
-lynx-memory init           Install hooks and slash commands
+lynx-memory init           Install hooks, slash commands, and skill links
 lynx-memory init-project   Create a .lynx-memory/ marker in cwd to enable
                              project-level storage
 lynx-memory status         Show data dir, hook registration, DB stats
@@ -93,13 +113,14 @@ lynx-memory merge          Merge memory between the project and global stores
                              (--from / --to is project|global, with --dry-run)
 lynx-memory delete         Permanently delete memory for a scope
                              (--scope project|global|both, with double confirm)
-lynx-memory uninstall      Remove hooks and slash commands (keeps your data)
+lynx-memory uninstall      Remove hooks, slash commands, and skill links (keeps your data)
 ```
 
 ## Slash commands
 
 `lynx-memory init` also installs five global slash commands into
-`~/.claude/commands/`, callable from any Claude Code session:
+`~/.openlynx/commands/` and links them into host command directories such as
+`~/.claude/commands/` and `~/.codex/commands/`:
 
 | Command                         | What it does                                                |
 | ------------------------------- | ----------------------------------------------------------- |
@@ -111,6 +132,13 @@ lynx-memory uninstall      Remove hooks and slash commands (keeps your data)
 
 Each of these runs `lynx-memory status` / `merge --dry-run` first and asks
 for your approval before any write or destructive action.
+
+## Skills
+
+`lynx-memory init` installs the bundled OpenLynx skill into
+`~/.openlynx/skills/openlynx/` and links it into supported host skill
+directories such as `~/.claude/skills/openlynx` and
+`~/.codex/skills/openlynx`.
 
 ## Web UI
 
@@ -126,7 +154,7 @@ in your browser and lets you:
 - Tag turns (e.g. `#work`, `#personal`) and filter by tag
 - Delete a single turn (also clears its embedding from Chroma)
 - See the per-turn **summary** above each turn, with a one-click button to (re)generate it on demand
-- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (Anthropic / OpenAI), model, Top-K, min score, and retrieval scope — changes are saved directly to `~/.claude/lynx-memory/.env`
+- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (Anthropic / OpenAI), model, Top-K, min score, and retrieval scope — changes are saved directly to `~/.openlynx/.env`
 
 ### Usage
 
@@ -167,7 +195,7 @@ lynx-memory init-project
 It creates a `.lynx-memory/` marker. As long as your cwd is inside that
 project, memory transparently switches to the project-level store at
 `<project>/.lynx-memory/db/`, isolated from the global one at
-`~/.claude/lynx-memory/`.
+`~/.openlynx/`.
 
 Use `/lynx-memory-status` to inspect the active scope, and
 `/lynx-memory-pull-global` / `/lynx-memory-push-global` to move history
@@ -175,7 +203,7 @@ between the two layers.
 
 ## Configuration
 
-All optional, set in `~/.claude/lynx-memory/.env`:
+All optional, set in `~/.openlynx/.env`:
 
 | Variable                       | Default                              | Purpose                                    |
 | ------------------------------ | ------------------------------------ | ------------------------------------------ |
@@ -189,8 +217,8 @@ All optional, set in `~/.claude/lynx-memory/.env`:
 | `OPENAI_API_KEY`               | —                                    | Required when `SUMMARY_BACKEND=openai`     |
 | `OPENAI_MODEL`                 | `gpt-4o-mini`                        | OpenAI model used for summarization        |
 | `OPENAI_BASE_URL`              | `https://api.openai.com/v1`          | Override for OpenAI-compatible endpoints   |
-| `LYNX_MEMORY_DIR`            | `~/.claude/lynx-memory`            | Where SQLite + Chroma live                 |
-| `LYNX_MEMORY_SUMMARY_MODEL`  | `claude-haiku-4-5-20251001`          | Anthropic model used by `SessionEnd`       |
+| `LYNX_MEMORY_DIR`              | `~/.openlynx`                         | Where SQLite + Chroma live                 |
+| `LYNX_MEMORY_SUMMARY_MODEL`    | `claude-haiku-4-5-20251001`           | Anthropic model used by `SessionEnd`       |
 
 ## Optional: MCP server
 
@@ -210,15 +238,15 @@ You can also expose memory as MCP tools for Claude Code (`search_memory`,
 ## Uninstall
 
 ```bash
-lynx-memory uninstall                   # remove hooks + slash commands
+lynx-memory uninstall                   # remove hooks + slash commands + skill links
 lynx-memory delete --scope global       # delete the global store (confirms)
 # or
-rm -rf ~/.claude/lynx-memory            # nuke directly (irreversible)
+rm -rf ~/.openlynx                       # nuke directly (irreversible)
 ```
 
 ## Privacy
 
-- All data stays on your machine in `~/.claude/lynx-memory/`.
+- All data stays on your machine in `~/.openlynx/`.
 - Outbound calls: **Voyage AI** for embeddings (your prompt text); **Anthropic** or **OpenAI**
   for per-turn and session summaries (requires an API key — set via `.env` or the Web UI ⚙ Settings panel).
 - Set `SUMMARY_ENABLED=0` if you don't want per-turn summaries to leave the box.

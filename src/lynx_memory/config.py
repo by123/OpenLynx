@@ -1,7 +1,7 @@
 """Centralized paths and environment loading for lynx-memory.
 
 Supports two storage scopes:
-  - global: ~/.claude/lynx-memory/ (default, also overridable via LYNX_MEMORY_DIR)
+  - global: ~/.openlynx/ (default, also overridable via LYNX_MEMORY_DIR)
   - project: <project_root>/.lynx-memory/ when walked-up from cwd
 
 `resolve_data_dir(cwd)` picks project if a marker dir is present, else global.
@@ -14,12 +14,9 @@ from dotenv import load_dotenv
 
 PROJECT_MARKER = ".lynx-memory"
 
-GLOBAL_DATA_DIR = Path(
-    os.environ.get(
-        "LYNX_MEMORY_DIR",
-        os.path.expanduser("~/.claude/lynx-memory"),
-    )
-)
+OPENLYNX_HOME = Path(os.environ.get("OPENLYNX_HOME", os.path.expanduser("~/.openlynx")))
+LEGACY_GLOBAL_DATA_DIR = Path(os.path.expanduser("~/.claude/lynx-memory"))
+GLOBAL_DATA_DIR = Path(os.environ.get("LYNX_MEMORY_DIR", str(OPENLYNX_HOME)))
 
 # Backward-compatible aliases — point to the global store.
 DATA_DIR = GLOBAL_DATA_DIR
@@ -29,6 +26,8 @@ DB_PATH = DB_DIR / "memory.db"
 CHROMA_DIR = DB_DIR / "chroma"
 LOG_PATH = DB_DIR / "hook.log"
 STATE_PATH = DB_DIR / "last_turn.json"
+OPENLYNX_COMMANDS_DIR = GLOBAL_DATA_DIR / "commands"
+OPENLYNX_SKILLS_DIR = GLOBAL_DATA_DIR / "skills"
 
 CLAUDE_SETTINGS_PATH = Path(os.path.expanduser("~/.claude/settings.json"))
 

@@ -39,14 +39,33 @@ lynx-memory init
 
 `init` 会：
 
-1. 创建数据目录 `~/.claude/lynx-memory/`
+1. 创建共享的 OpenLynx 主目录 `~/.openlynx/`
 2. 提示你输入 `VOYAGE_API_KEY`（免费申请：https://www.voyageai.com/）
 3. 写入默认配置：`MIN_SCORE=0.7`、`SUMMARY_ENABLED=1`、
    `SUMMARY_MODEL=claude-haiku-4-5-20251001`、`SUMMARY_BACKEND=auto`；
    设置 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 以启用每轮摘要
    （也可以之后在 Web UI ⚙ 设置面板里配置）
 4. 备份现有的 `~/.claude/settings.json`，注入三个 hook
-5. 打印验证步骤
+5. 把共享 commands 和 OpenLynx skill 链接到支持的宿主目录
+6. 打印验证步骤
+
+如果旧版 `~/.claude/lynx-memory/` 存在且 `~/.openlynx/` 不存在，
+`init` 会先迁移到 `~/.openlynx/` 再安装 hooks。如果两个目录都存在，
+OpenLynx 会使用 `~/.openlynx/`，并保留旧目录不做自动合并。
+
+共享主目录不属于任何单一宿主：
+
+```text
+~/.openlynx/
+  .env
+  db/
+  commands/
+  skills/
+```
+
+Claude Code 和 Codex 仍保留各自的 hook 配置文件，但 OpenLynx 可复用文件会从
+这个共享主目录链接到 `~/.claude/commands/`、`~/.claude/skills/`、
+`~/.codex/commands/`、`~/.codex/skills/` 等宿主目录。
 
 然后开一个新的 Claude Code 会话，聊几轮后跑：
 
@@ -74,12 +93,12 @@ Claude Code 一致。**hook 在会话启动时加载，请重启正在运行的
 `codex` 进程后才会生效。**
 
 在 Claude Code 写下的对话可以在 Codex 里被召回（反之亦然），
-因为两边都写入同一个 `~/.claude/lynx-memory/` 下的 SQLite + Chroma 仓库。
+因为两边都写入同一个 `~/.openlynx/` 下的 SQLite + Chroma 仓库。
 
 ## 命令
 
 ```
-lynx-memory init           安装 hooks 与 slash 命令
+lynx-memory init           安装 hooks、slash 命令与 skill 链接
 lynx-memory init-project   在当前目录创建 .lynx-memory/ 标记，启用项目级存储
 lynx-memory status         查看数据目录、hook 注册情况、数据库统计
 lynx-memory doctor         自检 Python、依赖、API key、settings.json
@@ -89,13 +108,14 @@ lynx-memory retag          给历史 turn 回填结构化自动标签
                              （--scope project|global|both，可选 --dry-run / --limit）
 lynx-memory delete         永久删除某个 scope 的记忆
                              （--scope project|global|both，默认带二次确认）
-lynx-memory uninstall      卸载 hooks 与 slash 命令（保留数据）
+lynx-memory uninstall      卸载 hooks、slash 命令与 skill 链接（保留数据）
 ```
 
 ## Slash 命令
 
-`lynx-memory init` 会顺带把以下五个全局 slash 命令安装到 `~/.claude/commands/`，
-在任意 Claude Code 会话里直接调用：
+`lynx-memory init` 会把以下五个全局 slash 命令写入
+`~/.openlynx/commands/`，再链接到 `~/.claude/commands/`、
+`~/.codex/commands/` 等宿主命令目录：
 
 | 命令                          | 作用                                                 |
 | ----------------------------- | ---------------------------------------------------- |
@@ -107,6 +127,12 @@ lynx-memory uninstall      卸载 hooks 与 slash 命令（保留数据）
 
 这些命令是 Claude 自然语言执行模板，会自动跑 `lynx-memory status` /
 `merge --dry-run` 预览，并在合并 / 删除前征得你的同意。
+
+## Skills
+
+`lynx-memory init` 会把内置 OpenLynx skill 安装到
+`~/.openlynx/skills/openlynx/`，再链接到 `~/.claude/skills/openlynx`、
+`~/.codex/skills/openlynx` 等支持的宿主 skill 目录。
 
 ## Web UI
 
@@ -122,7 +148,7 @@ lynx-memory uninstall      卸载 hooks 与 slash 命令（保留数据）
 - 自动生成**类型化标签**，区分 `user` / `project` / `module` / `custom`
 - 删除单条 turn（同时清掉 Chroma 里的向量）
 - 每条 turn 顶部显示**摘要**，可一键"重新生成"
-- 点击右上角 **⚙ 设置图标** 打开**设置面板**，在浏览器里直接配置所有选项：API Key、摘要后端（Anthropic / OpenAI）、模型、Top-K、相似度阈值、召回范围——保存后自动写入 `~/.claude/lynx-memory/.env`
+- 点击右上角 **⚙ 设置图标** 打开**设置面板**，在浏览器里直接配置所有选项：API Key、摘要后端（Anthropic / OpenAI）、模型、Top-K、相似度阈值、召回范围——保存后自动写入 `~/.openlynx/.env`
 
 ### 使用方式
 
@@ -186,7 +212,7 @@ lynx-memory init-project
 ```
 
 会创建 `.lynx-memory/` 标记目录。之后只要 cwd 在该项目内，记忆就自动切到
-项目级仓库 `<project>/.lynx-memory/db/`，与全局 `~/.claude/lynx-memory/`
+项目级仓库 `<project>/.lynx-memory/db/`，与全局 `~/.openlynx/`
 互不污染。
 
 随时用 `/lynx-memory-status` 查看当前 scope，用 `/lynx-memory-pull-global`
@@ -194,7 +220,7 @@ lynx-memory init-project
 
 ## 配置
 
-全部可选，写在 `~/.claude/lynx-memory/.env`：
+全部可选，写在 `~/.openlynx/.env`：
 
 | 变量                            | 默认值                              | 用途                              |
 | ------------------------------- | ----------------------------------- | --------------------------------- |
@@ -208,8 +234,8 @@ lynx-memory init-project
 | `OPENAI_API_KEY`                | —                                   | `SUMMARY_BACKEND=openai` 时必填   |
 | `OPENAI_MODEL`                  | `gpt-4o-mini`                       | OpenAI 摘要用的模型               |
 | `OPENAI_BASE_URL`               | `https://api.openai.com/v1`         | 兼容 OpenAI 协议的自定义端点      |
-| `LYNX_MEMORY_DIR`             | `~/.claude/lynx-memory`           | SQLite + Chroma 数据目录          |
-| `LYNX_MEMORY_SUMMARY_MODEL`   | `claude-haiku-4-5-20251001`         | `SessionEnd` 会话摘要用的 Anthropic 模型 |
+| `LYNX_MEMORY_DIR`              | `~/.openlynx`                        | SQLite + Chroma 数据目录          |
+| `LYNX_MEMORY_SUMMARY_MODEL`    | `claude-haiku-4-5-20251001`          | `SessionEnd` 会话摘要用的 Anthropic 模型 |
 
 ## 可选：MCP 服务
 
@@ -229,15 +255,15 @@ lynx-memory init-project
 ## 卸载
 
 ```bash
-lynx-memory uninstall                   # 移除 hooks 与 slash 命令
+lynx-memory uninstall                   # 移除 hooks、slash 命令与 skill 链接
 lynx-memory delete --scope global       # 删除全局存储数据（带确认）
 # 或
-rm -rf ~/.claude/lynx-memory            # 直接 rm（不可逆）
+rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 ```
 
 ## 隐私说明
 
-- 所有数据保存在你本机的 `~/.claude/lynx-memory/`
+- 所有数据保存在你本机的 `~/.openlynx/`
 - 外部请求：**Voyage AI**（embedding，包含你的 prompt 文本）；**Anthropic** 或 **OpenAI**
   用于每轮和会话级摘要（需配置 API Key，可通过 `.env` 或 Web UI ⚙ 设置面板配置）
 - 不想让每轮内容被发去做摘要的话，设 `SUMMARY_ENABLED=0`

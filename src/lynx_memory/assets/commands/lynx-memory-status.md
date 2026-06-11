@@ -15,6 +15,6 @@ Summarize the key points for the user:
 - Path of the **active data directory**
 - Number of sessions / turns / summaries
 - Whether a project-level repo `./.lynx-memory/` exists in the current directory
-- Whether the global repo `~/.claude/lynx-memory/` exists
+- Whether the global repo `~/.openlynx/` exists
 
 Do not perform any write or merge operations.

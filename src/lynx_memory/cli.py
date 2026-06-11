@@ -20,7 +20,10 @@ from .config import (
     DB_PATH,
     ENV_FILE,
     GLOBAL_DATA_DIR,
+    LEGACY_GLOBAL_DATA_DIR,
     LOG_PATH,
+    OPENLYNX_COMMANDS_DIR,
+    OPENLYNX_SKILLS_DIR,
     PROJECT_MARKER,
     SUPPORTED_TARGETS,
     ensure_dirs,
@@ -31,6 +34,7 @@ from .config import (
 )
 
 CLAUDE_COMMANDS_DIR = Path(os.path.expanduser("~/.claude/commands"))
+CLAUDE_SKILLS_DIR = Path(os.path.expanduser("~/.claude/skills"))
 SLASH_COMMAND_NAMES = (
     "lynx-memory-status.md",
     "lynx-memory-pull-global.md",
@@ -38,6 +42,7 @@ SLASH_COMMAND_NAMES = (
     "lynx-memory-delete.md",
     "lynx-memory-history.md",
 )
+OPENLYNX_SKILL_NAME = "openlynx"
 
 HOOK_COMMANDS = {
     "UserPromptSubmit": ("lynx-memory-on-prompt", 10000),
@@ -56,6 +61,25 @@ CODEX_HOOK_COMMANDS = {
 
 HOOK_MARKER_COMMANDS = {cmd for cmd, _ in HOOK_COMMANDS.values()}
 CODEX_HOOK_MARKER_COMMANDS = {cmd for cmd, _ in CODEX_HOOK_COMMANDS.values()}
+
+
+def _migrate_legacy_global_store() -> bool:
+    """Move the old Claude-owned global store to the OpenLynx home once."""
+    if os.environ.get("LYNX_MEMORY_DIR"):
+        return False
+    if not LEGACY_GLOBAL_DATA_DIR.exists():
+        return False
+    if GLOBAL_DATA_DIR.exists():
+        _print_warn(
+            f"Legacy data dir still exists at {LEGACY_GLOBAL_DATA_DIR}; "
+            f"using {GLOBAL_DATA_DIR}"
+        )
+        return False
+
+    GLOBAL_DATA_DIR.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(LEGACY_GLOBAL_DATA_DIR), str(GLOBAL_DATA_DIR))
+    _print_ok(f"Migrated legacy data dir: {LEGACY_GLOBAL_DATA_DIR} → {GLOBAL_DATA_DIR}")
+    return True
 
 
 # --------------------------------------------------------------------- helpers
@@ -415,6 +439,15 @@ def _install_claude_code() -> None:
     for name in SLASH_COMMAND_NAMES:
         if _install_slash_command(name):
             _print_ok(f"Installed slash command: /{name[:-3]}")
+    if _install_openlynx_skill():
+        _print_ok(f"Installed skill link: {CLAUDE_SKILLS_DIR / OPENLYNX_SKILL_NAME}")
+
+
+def _install_codex_commands() -> None:
+    codex_commands_dir = CODEX_HOME / "commands"
+    for name in SLASH_COMMAND_NAMES:
+        if _install_slash_command(name, codex_commands_dir):
+            _print_ok(f"Installed Codex command link: {codex_commands_dir / name}")
 
 
 def _install_codex() -> None:
@@ -438,6 +471,10 @@ def _install_codex() -> None:
         _write_codex_hooks(payload)
         _print_ok(f"Updated {CODEX_HOOKS_PATH}")
 
+    _install_codex_commands()
+    codex_skills_dir = CODEX_HOME / "skills"
+    if _install_openlynx_skill(codex_skills_dir):
+        _print_ok(f"Installed Codex skill link: {codex_skills_dir / OPENLYNX_SKILL_NAME}")
     print("  ! Restart any running `codex` process for hooks to take effect.")
 
 
@@ -448,7 +485,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  data dir: {DATA_DIR}")
     print()
 
+    _migrate_legacy_global_store()
     ensure_dirs()
+    OPENLYNX_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+    OPENLYNX_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     _print_ok(f"Created {DATA_DIR}")
 
     has_key = _ensure_env_file()
@@ -481,45 +521,54 @@ def _resolve_targets(target_arg: str) -> list:
 def _uninstall_claude_code() -> None:
     if not CLAUDE_SETTINGS_PATH.exists():
         _print_warn(f"{CLAUDE_SETTINGS_PATH} does not exist; nothing to do.")
-        return
-
-    settings = _read_settings()
-    bak = _backup_settings()
-    if bak:
-        _print_ok(f"Backed up settings.json → {bak.name}")
-
-    any_removed = False
-    for event, (command, _) in HOOK_COMMANDS.items():
-        if _remove_hook(settings, event, command):
-            _print_ok(f"Removed Claude Code hook: {event} → {command}")
-            any_removed = True
-
-    if any_removed:
-        _write_settings(settings)
-        _print_ok(f"Updated {CLAUDE_SETTINGS_PATH}")
     else:
-        _print_warn("No lynx-memory hooks were present in settings.json.")
+        settings = _read_settings()
+        bak = _backup_settings()
+        if bak:
+            _print_ok(f"Backed up settings.json → {bak.name}")
+
+        any_removed = False
+        for event, (command, _) in HOOK_COMMANDS.items():
+            if _remove_hook(settings, event, command):
+                _print_ok(f"Removed Claude Code hook: {event} → {command}")
+                any_removed = True
+
+        if any_removed:
+            _write_settings(settings)
+            _print_ok(f"Updated {CLAUDE_SETTINGS_PATH}")
+        else:
+            _print_warn("No lynx-memory hooks were present in settings.json.")
 
     for name in SLASH_COMMAND_NAMES:
         if _remove_slash_command(name):
             _print_ok(f"Removed slash command: {CLAUDE_COMMANDS_DIR / name}")
+    if _remove_openlynx_skill():
+        _print_ok(f"Removed skill link: {CLAUDE_SKILLS_DIR / OPENLYNX_SKILL_NAME}")
 
 
 def _uninstall_codex() -> None:
+    codex_commands_dir = CODEX_HOME / "commands"
     if not CODEX_HOOKS_PATH.exists():
         _print_warn(f"{CODEX_HOOKS_PATH} does not exist; nothing to do.")
-        return
-    payload = _read_codex_hooks()
-    any_removed = False
-    for event, (command, _) in CODEX_HOOK_COMMANDS.items():
-        if _remove_codex_hook(payload, event, command):
-            _print_ok(f"Removed Codex hook: {event} → {command}")
-            any_removed = True
-    if any_removed:
-        _write_codex_hooks(payload)
-        _print_ok(f"Updated {CODEX_HOOKS_PATH}")
     else:
-        _print_warn("No lynx-memory hooks were present in hooks.json.")
+        payload = _read_codex_hooks()
+        any_removed = False
+        for event, (command, _) in CODEX_HOOK_COMMANDS.items():
+            if _remove_codex_hook(payload, event, command):
+                _print_ok(f"Removed Codex hook: {event} → {command}")
+                any_removed = True
+        if any_removed:
+            _write_codex_hooks(payload)
+            _print_ok(f"Updated {CODEX_HOOKS_PATH}")
+        else:
+            _print_warn("No lynx-memory hooks were present in hooks.json.")
+
+    for name in SLASH_COMMAND_NAMES:
+        if _remove_slash_command(name, codex_commands_dir):
+            _print_ok(f"Removed Codex command link: {codex_commands_dir / name}")
+    codex_skills_dir = CODEX_HOME / "skills"
+    if _remove_openlynx_skill(codex_skills_dir):
+        _print_ok(f"Removed Codex skill link: {codex_skills_dir / OPENLYNX_SKILL_NAME}")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -550,7 +599,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"  scope          : {scope}  (active dir: {active})")
     if proj:
         print(f"  project marker : {proj}")
-    print(f"  global data    : {DATA_DIR}  (exists={DATA_DIR.exists()})")
+    print(f"  openlynx home  : {DATA_DIR}  (exists={DATA_DIR.exists()})")
+    print(f"  legacy dir     : {LEGACY_GLOBAL_DATA_DIR}  (exists={LEGACY_GLOBAL_DATA_DIR.exists()})")
     print(f"  env file       : {ENV_FILE}  (exists={ENV_FILE.exists()})")
     print(f"  database       : {active_paths['db_path']}  (exists={active_paths['db_path'].exists()})")
     print(f"  hook log       : {LOG_PATH}")
@@ -704,37 +754,142 @@ def _read_bundled_command(name: str) -> str:
     )
 
 
+def _read_bundled_skill_files(name: str = OPENLYNX_SKILL_NAME) -> dict[str, str]:
+    """Read bundled skill text files shipped inside the package."""
+    try:
+        skill_dir = resources.files("lynx_memory.assets").joinpath("skills", name)
+    except Exception:
+        return {}
+    if not skill_dir.is_dir():
+        return {}
+
+    files: dict[str, str] = {}
+    for item in skill_dir.iterdir():
+        if item.is_file():
+            files[item.name] = item.read_text(encoding="utf-8")
+    return files
+
+
+def _backup_path(path: Path) -> Path:
+    return path.with_suffix(f"{path.suffix}.bak.{int(time.time())}")
+
+
+def _install_shared_file_link(src_text: str, shared_path: Path, host_path: Path) -> bool:
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    host_path.parent.mkdir(parents=True, exist_ok=True)
+
+    changed = False
+    if not shared_path.exists() or shared_path.read_text(encoding="utf-8") != src_text:
+        shared_path.write_text(src_text, encoding="utf-8")
+        changed = True
+
+    if host_path.is_symlink() and host_path.resolve() == shared_path.resolve():
+        return changed
+
+    if host_path.exists() or host_path.is_symlink():
+        shutil.copy2(host_path, _backup_path(host_path), follow_symlinks=False)
+        host_path.unlink()
+
+    try:
+        host_path.symlink_to(shared_path)
+    except OSError:
+        _print_warn(f"Could not symlink {host_path}; copied shared file instead.")
+        host_path.write_text(src_text, encoding="utf-8")
+    return True
+
+
+def _install_shared_dir_link(files: dict[str, str], shared_dir: Path, host_dir: Path) -> bool:
+    if not files:
+        return False
+
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    host_dir.parent.mkdir(parents=True, exist_ok=True)
+    changed = False
+    for name, text in files.items():
+        target = shared_dir / name
+        if not target.exists() or target.read_text(encoding="utf-8") != text:
+            target.write_text(text, encoding="utf-8")
+            changed = True
+
+    if host_dir.is_symlink() and host_dir.resolve() == shared_dir.resolve():
+        return changed
+
+    if host_dir.exists() or host_dir.is_symlink():
+        backup = _backup_path(host_dir)
+        shutil.move(str(host_dir), str(backup))
+
+    try:
+        host_dir.symlink_to(shared_dir, target_is_directory=True)
+    except OSError:
+        _print_warn(f"Could not symlink {host_dir}; copied shared skill instead.")
+        shutil.copytree(shared_dir, host_dir)
+    return True
+
+
 def _install_slash_command(name: str, target_dir: Path | None = None) -> bool:
-    """Copy a bundled slash command into target_dir (default: ~/.claude/commands/).
+    """Install a bundled slash command through the shared OpenLynx command store.
 
     Returns True if a write happened, False if the existing file already matches.
     """
     src = _read_bundled_command(name)
+    shared = OPENLYNX_COMMANDS_DIR / name
     dest_dir = target_dir or CLAUDE_COMMANDS_DIR
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dst = dest_dir / name
-    if dst.exists() and dst.read_text(encoding="utf-8") == src:
+    return _install_shared_file_link(src, shared, dest_dir / name)
+
+
+def _install_openlynx_skill(target_dir: Path | None = None) -> bool:
+    files = _read_bundled_skill_files(OPENLYNX_SKILL_NAME)
+    shared = OPENLYNX_SKILLS_DIR / OPENLYNX_SKILL_NAME
+    dest_dir = target_dir or CLAUDE_SKILLS_DIR
+    return _install_shared_dir_link(files, shared, dest_dir / OPENLYNX_SKILL_NAME)
+
+
+def _remove_slash_command(name: str, target_dir: Path | None = None) -> bool:
+    dst = (target_dir or CLAUDE_COMMANDS_DIR) / name
+    if not dst.exists():
         return False
-    if dst.exists():
-        bak = dst.with_suffix(f".md.bak.{int(time.time())}")
-        shutil.copy2(dst, bak)
-    dst.write_text(src, encoding="utf-8")
+
+    if not dst.is_symlink():
+        _print_warn(f"{dst} is not an OpenLynx-managed symlink; left it alone.")
+        return False
+
+    try:
+        target = dst.resolve()
+        shared_root = OPENLYNX_COMMANDS_DIR.resolve()
+    except OSError:
+        return False
+
+    try:
+        target.relative_to(shared_root)
+    except ValueError:
+        _print_warn(f"{dst} does not point into {OPENLYNX_COMMANDS_DIR}; left it alone.")
+        return False
+
+    dst.unlink()
     return True
 
 
-def _remove_slash_command(name: str) -> bool:
-    dst = CLAUDE_COMMANDS_DIR / name
+def _remove_openlynx_skill(target_dir: Path | None = None) -> bool:
+    dst = (target_dir or CLAUDE_SKILLS_DIR) / OPENLYNX_SKILL_NAME
     if not dst.exists():
         return False
-    try:
-        if dst.read_text(encoding="utf-8") != _read_bundled_command(name):
-            _print_warn(
-                f"{dst} differs from the bundled version; left it alone. "
-                "Delete it manually if you want it gone."
-            )
-            return False
-    except Exception:
+
+    if not dst.is_symlink():
+        _print_warn(f"{dst} is not an OpenLynx-managed symlink; left it alone.")
         return False
+
+    try:
+        target = dst.resolve()
+        shared_root = OPENLYNX_SKILLS_DIR.resolve()
+    except OSError:
+        return False
+
+    try:
+        target.relative_to(shared_root)
+    except ValueError:
+        _print_warn(f"{dst} does not point into {OPENLYNX_SKILLS_DIR}; left it alone.")
+        return False
+
     dst.unlink()
     return True
 

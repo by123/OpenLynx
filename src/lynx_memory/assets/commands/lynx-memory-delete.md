@@ -11,7 +11,7 @@ You are helping the user **permanently delete** lynx-memory history (sqlite + ch
 lynx-memory status
 ```
 
-Report to the user: whether the project repo `./.lynx-memory/` and the global repo `~/.claude/lynx-memory/` exist, and the turn / summary counts of each.
+Report to the user: whether the project repo `./.lynx-memory/` and the global repo `~/.openlynx/` exist, and the turn / summary counts of each.
 
 ## Step 2: Ask which scope to delete
 
