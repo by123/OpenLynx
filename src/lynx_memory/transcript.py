@@ -367,6 +367,17 @@ def persist_last_turn(
 
     user_text = user_text[:8000]
 
+    # Goal relevance gate: when this store has a goal, an LLM decides whether
+    # the turn is worth keeping. Irrelevant turns never touch the DB. We record
+    # the assistant uuid in the state file even on a drop so the sibling hook
+    # (Stop vs UserPromptSubmit) doesn't re-judge the same turn. Fails open.
+    from .goals import evaluate_turn_relevance
+
+    if evaluate_turn_relevance(data_dir, user_text, asst_text) == "drop":
+        state[session_id] = a_uuid
+        _save_state(state_path, state)
+        return "gated"
+
     mem = Memory(data_dir=data_dir)
     try:
         mem.ensure_session(session_id, cwd)

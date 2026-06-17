@@ -105,9 +105,12 @@ because both write to the same SQLite + Chroma store at
 
 ```
 lynx-memory init           Install hooks, slash commands, and skill links
+                             (--goal "..." to set a global goal non-interactively)
 lynx-memory init-project   Create a .lynx-memory/ marker in cwd to enable
-                             project-level storage
-lynx-memory status         Show data dir, hook registration, DB stats
+                             project-level storage (--goal "..." for a project goal)
+lynx-memory status         Show data dir, hook registration, DB stats, active goal
+lynx-memory goal           View/set/clear the per-scope goal
+                             (goal show | set "..." | clear, with --scope)
 lynx-memory doctor         Verify Python, deps, API key, settings.json
 lynx-memory merge          Merge memory between the project and global stores
                              (--from / --to is project|global, with --dry-run)
@@ -116,15 +119,45 @@ lynx-memory delete         Permanently delete memory for a scope
 lynx-memory uninstall      Remove hooks, slash commands, and skill links (keeps your data)
 ```
 
+## Goals
+
+A **goal** is an optional, per-scope (project or global) statement of what you're
+working toward. You can set one at install time (`lynx-memory init`/`init-project`
+prompt for it, or pass `--goal "..."`) or any time afterwards:
+
+```bash
+lynx-memory goal set "Ship the v2 billing API and migrate existing customers"
+lynx-memory goal show          # project + global goals, gating state
+lynx-memory goal clear         # active scope, asks to confirm
+```
+
+When a goal is set, OpenLynx changes two behaviors for that store:
+
+- **Storage gating** — before a turn is persisted, the configured summarization
+  LLM (OpenAI / DeepSeek / Qwen) judges whether it is relevant to the goal. Turns
+  judged irrelevant never enter the database. The judgement is **strict** by
+  default and **fails open**: if no LLM key is configured or the call errors out,
+  the turn is stored, so memory is never lost on a hiccup. Every dropped turn is
+  logged to `db/hook.log`.
+- **Goal-focused summaries** — per-turn and per-session summaries are steered to
+  prioritise information that advances the goal.
+
+With no goal set, memory behaves exactly as before (every turn stored and
+summarized). Tunables (`.env`): `GOAL_GATING_ENABLED` (default `1`),
+`GOAL_STRICTNESS` (`loose`|`balanced`|`strict`, default `strict`),
+`GOAL_JUDGE_TIMEOUT` (seconds, default `8`). Changing a goal does not delete
+already-stored turns — it only affects which future turns are kept.
+
 ## Slash commands
 
-`lynx-memory init` also installs five global slash commands into
+`lynx-memory init` also installs six global slash commands into
 `~/.openlynx/commands/` and links them into host command directories such as
 `~/.claude/commands/` and `~/.codex/commands/`:
 
 | Command                         | What it does                                                |
 | ------------------------------- | ----------------------------------------------------------- |
 | `/lynx-memory-status`         | Show current scope (project vs global) with stats for both  |
+| `/lynx-memory-goal`           | View or set the per-scope goal (gates storage, focuses summaries)|
 | `/lynx-memory-pull-global`    | Merge global memory into the current project (global → proj)|
 | `/lynx-memory-push-global`    | Merge current project memory into global (proj → global)    |
 | `/lynx-memory-delete`         | Delete memory with mandatory double confirm (`DELETE` + `y`)|

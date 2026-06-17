@@ -41,6 +41,7 @@ SLASH_COMMAND_NAMES = (
     "lynx-memory-push-global.md",
     "lynx-memory-delete.md",
     "lynx-memory-history.md",
+    "lynx-memory-goal.md",
 )
 OPENLYNX_SKILL_NAME = "openlynx"
 
@@ -404,6 +405,8 @@ def _ensure_env_file() -> bool:
     existing.setdefault("MIN_SCORE", "0.7")
     existing.setdefault("SUMMARY_ENABLED", "1")
     existing.setdefault("SUMMARY_BACKEND", "auto")
+    existing.setdefault("GOAL_GATING_ENABLED", "1")
+    existing.setdefault("GOAL_STRICTNESS", "strict")
 
     lines = [f"{k}={v}" for k, v in existing.items()]
     ENV_FILE.write_text("\n".join(lines) + "\n")
@@ -477,6 +480,72 @@ def _install_codex() -> None:
     print("  ! Restart any running `codex` process for hooks to take effect.")
 
 
+def _any_summary_key() -> bool:
+    """True if any summarization/judge provider key is configured."""
+    from .summarizer import _PROVIDER_KEY_ENVS
+
+    return any(
+        os.environ.get(env, "").strip()
+        for envs in _PROVIDER_KEY_ENVS.values()
+        for env in envs
+    )
+
+
+def _set_goal_for(data_dir: Path, text: str) -> None:
+    from .storage import Memory
+
+    mem = Memory(data_dir=data_dir)
+    try:
+        mem.set_goal(text)
+    finally:
+        mem.close()
+
+
+def _prompt_goal(scope_label: str) -> str:
+    """Interactively ask for an optional goal. Empty/no-stdin → skip."""
+    print()
+    print(f"Optionally set a {scope_label} memory goal.")
+    print("When set, OpenLynx only stores turns relevant to it (strict, LLM-judged)")
+    print("and focuses summaries on it. Press Enter to skip (memory behaves as before).")
+    try:
+        return input("Goal: ").strip()
+    except EOFError:
+        return ""
+
+
+def _apply_init_goal(data_dir: Path, scope_label: str, goal_arg: str | None) -> None:
+    """Resolve the goal for `init`/`init-project` (flag or prompt) and store it.
+
+    On re-runs the existing goal is shown; pressing Enter at the prompt keeps it.
+    """
+    if goal_arg:
+        goal = goal_arg.strip()
+    else:
+        from .goals import get_goal_text
+
+        existing = get_goal_text(data_dir)
+        if existing:
+            print()
+            print(f"Current {scope_label} goal: {existing}")
+            print("Press Enter to keep it, or type a new goal to replace it.")
+            try:
+                goal = input("Goal: ").strip()
+            except EOFError:
+                goal = ""
+        else:
+            goal = _prompt_goal(scope_label)
+    if not goal:
+        return
+    _set_goal_for(data_dir, goal)
+    _print_ok(f"Recorded {scope_label} goal.")
+    load_env(data_dir)
+    if not _any_summary_key():
+        _print_warn(
+            "No summarization LLM key set (OPENAI/DEEPSEEK/QWEN). Relevance gating "
+            "and goal-aware summaries stay inactive until one is configured."
+        )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     targets = _resolve_targets(args.target)
 
@@ -495,6 +564,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         _print_ok(f"Wrote {ENV_FILE}")
     else:
         _print_warn(f"Wrote {ENV_FILE} (VOYAGE_API_KEY still empty)")
+
+    _apply_init_goal(GLOBAL_DATA_DIR, "global", getattr(args, "goal", None))
 
     if "claude_code" in targets:
         print()
@@ -598,6 +669,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"  scope          : {scope}  (active dir: {active})")
     if proj:
         print(f"  project marker : {proj}")
+
+    from .goals import gating_enabled, get_goal_text, strictness
+
+    load_env(active)  # so GOAL_* settings reflect this scope's .env
+    goal_text = get_goal_text(active)
+    if goal_text:
+        gate = "on" if gating_enabled() else "off"
+        print(f"  goal ({scope})    : {goal_text}")
+        print(f"  goal gating    : {gate} (strictness={strictness()})")
+    else:
+        print(f"  goal ({scope})    : (none — storing all turns)")
     print(f"  openlynx home  : {DATA_DIR}  (exists={DATA_DIR.exists()})")
     print(f"  legacy dir     : {LEGACY_GLOBAL_DATA_DIR}  (exists={LEGACY_GLOBAL_DATA_DIR.exists()})")
     print(f"  env file       : {ENV_FILE}  (exists={ENV_FILE.exists()})")
@@ -676,6 +758,8 @@ def cmd_init_project(args: argparse.Namespace) -> int:
     for name in SLASH_COMMAND_NAMES:
         if _install_slash_command(name, project_commands_dir):
             _print_ok(f"Installed slash command: /{name[:-3]} → {project_commands_dir / name}")
+
+    _apply_init_goal(marker, "project", getattr(args, "goal", None))
 
     print()
     print(f"Project memory will live in: {marker}")
@@ -1200,6 +1284,109 @@ def cmd_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------- goal
+
+def _resolve_goal_dir(scope: str, cwd: Path) -> tuple[str, Path | None]:
+    """Map a goal scope to (label, data_dir). 'auto' picks project if in one."""
+    if scope == "global":
+        return ("global", GLOBAL_DATA_DIR)
+    if scope == "project":
+        return ("project", find_project_root(cwd))
+    proj = find_project_root(cwd)
+    return ("project", proj) if proj else ("global", GLOBAL_DATA_DIR)
+
+
+def cmd_goal_show(args: argparse.Namespace) -> int:
+    from .goals import gating_enabled, get_goal_text, strictness
+
+    cwd = Path.cwd()
+    scope = getattr(args, "scope", "both")
+    targets: list[tuple[str, Path]] = []
+    if scope == "both":
+        proj = find_project_root(cwd)
+        if proj:
+            targets.append(("project", proj))
+        targets.append(("global", GLOBAL_DATA_DIR))
+    else:
+        label, d = _resolve_goal_dir(scope, cwd)
+        if d is None:
+            _print_warn(f"{label}: no project store found walking up from {cwd}.")
+        else:
+            targets.append((label, d))
+
+    print("lynx-memory goal")
+    load_env(GLOBAL_DATA_DIR)
+    gate = "on" if gating_enabled() else "off"
+    for label, d in targets:
+        text = get_goal_text(d)
+        if text:
+            print(f"  {label} ({d}):")
+            print(f"    {text}")
+        else:
+            print(f"  {label}: (no goal set)")
+    if any(get_goal_text(d) for _, d in targets):
+        print(f"  gating: {gate} (strictness={strictness()})")
+        if not _any_summary_key():
+            _print_warn(
+                "No summarization LLM key set; gating and goal-aware summaries are inactive."
+            )
+    return 0
+
+
+def cmd_goal_set(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    text = " ".join(args.text).strip()
+    if not text:
+        _print_err("Goal text is empty.")
+        return 1
+    label, d = _resolve_goal_dir(args.scope, cwd)
+    if d is None:
+        _print_err(
+            f"No project store found walking up from {cwd}. "
+            "Run `lynx-memory init-project` first, or use --scope global."
+        )
+        return 1
+    _set_goal_for(d, text)
+    _print_ok(f"{label} goal set ({d}):")
+    print(f"  {text}")
+    load_env(d)
+    if not _any_summary_key():
+        _print_warn(
+            "No summarization LLM key set (OPENAI/DEEPSEEK/QWEN). Relevance gating "
+            "and goal-aware summaries stay inactive until one is configured."
+        )
+    return 0
+
+
+def cmd_goal_clear(args: argparse.Namespace) -> int:
+    from .goals import get_goal_text
+    from .storage import Memory
+
+    cwd = Path.cwd()
+    label, d = _resolve_goal_dir(args.scope, cwd)
+    if d is None:
+        _print_err(f"{label}: no project store found walking up from {cwd}.")
+        return 1
+    if not get_goal_text(d):
+        _print_warn(f"{label}: no goal set; nothing to clear.")
+        return 0
+    if not args.yes:
+        try:
+            ans = input(f"Clear the {label} goal? [y/N] ").strip().lower()
+        except EOFError:
+            ans = ""
+        if ans != "y":
+            _print_warn("Aborted.")
+            return 1
+    mem = Memory(data_dir=d)
+    try:
+        mem.clear_goal()
+    finally:
+        mem.close()
+    _print_ok(f"{label} goal cleared.")
+    return 0
+
+
 # --------------------------------------------------------------------- web
 
 def cmd_web(args: argparse.Namespace) -> int:
@@ -1283,6 +1470,11 @@ def main() -> None:
         choices=list(SUPPORTED_TARGETS) + ["all"],
         help="Which CLI host to install for (default: claude_code)",
     )
+    sp.add_argument(
+        "--goal",
+        default=None,
+        help="Set a global memory goal non-interactively (skips the prompt)",
+    )
     sp.set_defaults(func=cmd_init)
 
     sp = sub.add_parser("uninstall", help="Remove hooks for one or more CLI hosts")
@@ -1299,6 +1491,11 @@ def main() -> None:
         help="Create a project-scoped memory store (.lynx-memory/) in this directory",
     )
     sp.add_argument("path", nargs="?", default=None, help="Project root (default: cwd)")
+    sp.add_argument(
+        "--goal",
+        default=None,
+        help="Set the project memory goal non-interactively (skips the prompt)",
+    )
     sp.set_defaults(func=cmd_init_project)
 
     sp = sub.add_parser("status", help="Show installation status and stats")
@@ -1340,6 +1537,27 @@ def main() -> None:
     sp.add_argument("--port", type=int, default=9527, help="Bind port (default 9527; use 0 for a random free port)")
     sp.add_argument("--no-open", action="store_true", help="Do not auto-open a browser tab")
     sp.set_defaults(func=cmd_web)
+
+    sp = sub.add_parser(
+        "goal",
+        help="View or configure the per-scope memory goal (gating + summaries)",
+    )
+    sp.set_defaults(func=cmd_goal_show, scope="both")
+    gsub = sp.add_subparsers(dest="goal_action")
+
+    g_show = gsub.add_parser("show", help="Show the goal(s)")
+    g_show.add_argument("--scope", default="both", choices=["auto", "project", "global", "both"])
+    g_show.set_defaults(func=cmd_goal_show)
+
+    g_set = gsub.add_parser("set", help="Set the goal text for a scope")
+    g_set.add_argument("text", nargs="+", help="Goal description")
+    g_set.add_argument("--scope", default="auto", choices=["auto", "project", "global"])
+    g_set.set_defaults(func=cmd_goal_set)
+
+    g_clear = gsub.add_parser("clear", help="Remove the goal for a scope")
+    g_clear.add_argument("--scope", default="auto", choices=["auto", "project", "global"])
+    g_clear.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    g_clear.set_defaults(func=cmd_goal_clear)
 
     args = p.parse_args()
     sys.exit(args.func(args))

@@ -98,8 +98,12 @@ Claude Code 一致。**hook 在会话启动时加载，请重启正在运行的
 
 ```
 lynx-memory init           安装 hooks、slash 命令与 skill 链接
+                             （--goal "..." 非交互地设置全局目标）
 lynx-memory init-project   在当前目录创建 .lynx-memory/ 标记，启用项目级存储
-lynx-memory status         查看数据目录、hook 注册情况、数据库统计
+                             （--goal "..." 设置项目目标）
+lynx-memory status         查看数据目录、hook 注册情况、数据库统计、当前目标
+lynx-memory goal           查看 / 设置 / 清除按 scope 划分的目标
+                             （goal show | set "..." | clear，可选 --scope）
 lynx-memory doctor         自检 Python、依赖、API key、settings.json
 lynx-memory merge          在项目级 / 全局两个仓库之间合并记忆
                              （--from / --to 选 project|global，可选 --dry-run）
@@ -110,15 +114,41 @@ lynx-memory delete         永久删除某个 scope 的记忆
 lynx-memory uninstall      卸载 hooks、slash 命令与 skill 链接（保留数据）
 ```
 
+## 目标（Goals）
+
+**目标**是按 scope（项目级或全局）设置的、描述你当前在做什么的一句话，可选。
+可以在安装时设置（`lynx-memory init`/`init-project` 会询问，或用 `--goal "..."`），
+也可以随时设置：
+
+```bash
+lynx-memory goal set "上线 v2 计费 API 并迁移现有客户"
+lynx-memory goal show          # 查看项目级 + 全局目标、gating 状态
+lynx-memory goal clear         # 清除当前 scope 的目标（需确认）
+```
+
+设置目标后，该仓库会改变两个行为：
+
+- **存储 gating**：每个 turn 写库前，由配置的摘要 LLM（OpenAI / DeepSeek / Qwen）
+  判断它是否与目标相关；判定为无关的 turn 不会进入数据库。默认采用**严格**判定，
+  且**失败时放行**——若没有配置 LLM key 或调用出错，turn 仍会被存储，绝不因抖动丢记忆。
+  每条被丢弃的 turn 都会记录到 `db/hook.log`。
+- **结合目标的摘要**：单轮与整段会话的摘要都会优先保留推进目标的信息。
+
+未设置目标时，行为与之前完全一致（所有 turn 照常存储与摘要）。可调项（`.env`）：
+`GOAL_GATING_ENABLED`（默认 `1`）、`GOAL_STRICTNESS`（`loose`|`balanced`|`strict`，
+默认 `strict`）、`GOAL_JUDGE_TIMEOUT`（秒，默认 `8`）。修改目标不会删除已存储的
+turn，只影响之后哪些 turn 会被保留。
+
 ## Slash 命令
 
-`lynx-memory init` 会把以下五个全局 slash 命令写入
+`lynx-memory init` 会把以下六个全局 slash 命令写入
 `~/.openlynx/commands/`，再链接到 `~/.claude/commands/`、
 `~/.codex/commands/` 等宿主命令目录：
 
 | 命令                          | 作用                                                 |
 | ----------------------------- | ---------------------------------------------------- |
 | `/lynx-memory-status`       | 查看当前是项目级还是全局，并显示两个仓库的统计       |
+| `/lynx-memory-goal`         | 查看或设置按 scope 的目标（gating 存储、聚焦摘要）   |
 | `/lynx-memory-pull-global`  | 把全局历史会话合并到当前项目（global → project）     |
 | `/lynx-memory-push-global`  | 把当前项目的历史会话合并到全局（project → global）   |
 | `/lynx-memory-delete`       | 永久删除记忆，对话里强制双重确认（输 `DELETE` + `y`）|

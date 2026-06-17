@@ -87,6 +87,12 @@ CREATE TABLE IF NOT EXISTS retrieval_hits (
 );
 CREATE INDEX IF NOT EXISTS idx_retrievals_ts ON retrievals(ts);
 CREATE INDEX IF NOT EXISTS idx_retrieval_hits_turn ON retrieval_hits(turn_id);
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -94,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_hits_turn ON retrieval_hits(turn_id);
 # migration. Fresh DBs jump straight to TARGET after SCHEMA runs (SCHEMA
 # already includes every column); pre-existing DBs get patched by the
 # corresponding migration step.
-TARGET_SCHEMA_VERSION = 1
+TARGET_SCHEMA_VERSION = 2
 
 
 def _migrate_to_v1(db: sqlite3.Connection) -> None:
@@ -129,9 +135,20 @@ def _migrate_to_v1(db: sqlite3.Connection) -> None:
     )
 
 
-# Map version -> migration function. To add a v2: write _migrate_to_v2,
+def _migrate_to_v2(db: sqlite3.Connection) -> None:
+    """Add the per-store singleton `goals` table (goal-aware gating/summaries)."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS goals ("
+        "id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "text TEXT NOT NULL, "
+        "created_at REAL NOT NULL, "
+        "updated_at REAL NOT NULL)"
+    )
+
+
+# Map version -> migration function. To add a v3: write _migrate_to_v3,
 # add entry here, bump TARGET_SCHEMA_VERSION.
-_MIGRATIONS = {1: _migrate_to_v1}
+_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2}
 
 
 def _apply_migrations(db: sqlite3.Connection) -> None:

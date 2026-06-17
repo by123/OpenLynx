@@ -47,7 +47,21 @@ Be specific with names, paths, tools, and decisions. Write in third person, plai
 Conversation:
 {conversation}"""
 
-def _summarize_via_openai(conversation: str) -> str:
+
+def _build_prompt(conversation: str, goal=None) -> str:
+    """Render the session-summary prompt, optionally focused on the user's goal."""
+    base = SUMMARIZE_PROMPT.format(conversation=conversation)
+    goal = (goal or "").strip()
+    if not goal:
+        return base
+    return (
+        f"The user's overarching goal for this work is:\n{goal}\n\n"
+        "Give priority to memories that advance or relate to this goal.\n\n"
+        f"{base}"
+    )
+
+
+def _summarize_via_openai(conversation: str, goal=None) -> str:
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not key:
         return ""
@@ -60,7 +74,7 @@ def _summarize_via_openai(conversation: str) -> str:
         }
         client = OpenAI(**kwargs)
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        prompt = SUMMARIZE_PROMPT.format(conversation=conversation)
+        prompt = _build_prompt(conversation, goal)
         try:
             resp = client.responses.create(
                 model=model,
@@ -80,7 +94,7 @@ def _summarize_via_openai(conversation: str) -> str:
         return ""
 
 
-def _summarize_via_compat(provider: str, conversation: str) -> str:
+def _summarize_via_compat(provider: str, conversation: str, goal=None) -> str:
     """Summarize via an OpenAI-compatible provider (deepseek, qwen)."""
     from ..summarizer import OPENAI_COMPAT_PROVIDERS, provider_api_key
 
@@ -98,7 +112,7 @@ def _summarize_via_compat(provider: str, conversation: str) -> str:
         model = os.environ.get(cfg["model_env"], cfg["default_model"])
         resp = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": SUMMARIZE_PROMPT.format(conversation=conversation)}],
+            messages=[{"role": "user", "content": _build_prompt(conversation, goal)}],
             max_tokens=800,
         )
         return (resp.choices[0].message.content or "").strip()
@@ -107,30 +121,30 @@ def _summarize_via_compat(provider: str, conversation: str) -> str:
         return ""
 
 
-def _summarize_via_deepseek(conversation: str) -> str:
-    return _summarize_via_compat("deepseek", conversation)
+def _summarize_via_deepseek(conversation: str, goal=None) -> str:
+    return _summarize_via_compat("deepseek", conversation, goal)
 
 
-def _summarize_via_qwen(conversation: str) -> str:
-    return _summarize_via_compat("qwen", conversation)
+def _summarize_via_qwen(conversation: str, goal=None) -> str:
+    return _summarize_via_compat("qwen", conversation, goal)
 
 
-def _call_provider(provider: str, conversation: str) -> str:
+def _call_provider(provider: str, conversation: str, goal=None) -> str:
     if provider == "openai":
-        return _summarize_via_openai(conversation)
+        return _summarize_via_openai(conversation, goal=goal)
     if provider == "deepseek":
-        return _summarize_via_deepseek(conversation)
+        return _summarize_via_deepseek(conversation, goal=goal)
     if provider == "qwen":
-        return _summarize_via_qwen(conversation)
+        return _summarize_via_qwen(conversation, goal=goal)
     return ""
 
 
-def _summarize(conversation: str) -> str:
+def _summarize(conversation: str, goal=None) -> str:
     """Try the configured summary backend. Return empty string on failure."""
     from ..summarizer import provider_order
 
     for provider in provider_order():
-        out = _call_provider(provider, conversation)
+        out = _call_provider(provider, conversation, goal)
         if out:
             return out
     return ""
@@ -186,7 +200,8 @@ def _main() -> int:
         if len(conversation) > 60000:
             conversation = conversation[:60000] + "\n\n[...truncated]"
 
-        summary = _summarize(conversation)
+        goal = (mem.get_goal() or {}).get("text")
+        summary = _summarize(conversation, goal)
         if summary:
             mem.add_summary(session_id, summary, len(turns))
 

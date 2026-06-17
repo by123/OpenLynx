@@ -23,7 +23,7 @@ class SummaryBackendTest(unittest.TestCase):
                 summarizer.summarize_with_source("user", "assistant"),
                 ("summary", "openai", "gpt-test"),
             )
-            openai_call.assert_called_once_with("user", "assistant")
+            openai_call.assert_called_once_with("user", "assistant", goal=None)
 
     def test_empty_openai_base_url_uses_default_url(self):
         seen_kwargs = {}
@@ -66,7 +66,7 @@ class SummaryBackendTest(unittest.TestCase):
             on_session_end, "_summarize_via_deepseek", return_value=""
         ) as deepseek_call:
             self.assertEqual(on_session_end._summarize("conversation"), "session summary")
-            openai_call.assert_called_once_with("conversation")
+            openai_call.assert_called_once_with("conversation", goal=None)
             deepseek_call.assert_not_called()
 
     def test_turn_summary_deepseek_backend_uses_deepseek_key(self):
@@ -83,7 +83,7 @@ class SummaryBackendTest(unittest.TestCase):
                 summarizer.summarize_with_source("user", "assistant"),
                 ("summary", "deepseek", "deepseek-chat"),
             )
-            deepseek_call.assert_called_once_with("user", "assistant")
+            deepseek_call.assert_called_once_with("user", "assistant", goal=None)
 
     def test_turn_summary_qwen_accepts_dashscope_key(self):
         with mock.patch.dict(
@@ -99,7 +99,7 @@ class SummaryBackendTest(unittest.TestCase):
                 summarizer.summarize_with_source("user", "assistant"),
                 ("summary", "qwen", "qwen-turbo"),
             )
-            qwen_call.assert_called_once_with("user", "assistant")
+            qwen_call.assert_called_once_with("user", "assistant", goal=None)
 
     def test_auto_mode_works_without_anthropic_key(self):
         with mock.patch.dict(
@@ -166,7 +166,7 @@ class SummaryBackendTest(unittest.TestCase):
             on_session_end, "_summarize_via_openai", return_value=""
         ) as openai_call:
             self.assertEqual(on_session_end._summarize("conversation"), "session summary")
-            qwen_call.assert_called_once_with("conversation")
+            qwen_call.assert_called_once_with("conversation", goal=None)
             openai_call.assert_not_called()
 
     def test_store_env_overrides_inherited_environment(self):

@@ -49,6 +49,7 @@ packages = ["src/lynx_memory"]
 "src/lynx_memory/assets/commands/lynx-memory-push-global.md" = "lynx_memory/assets/commands/lynx-memory-push-global.md"
 "src/lynx_memory/assets/commands/lynx-memory-delete.md" = "lynx_memory/assets/commands/lynx-memory-delete.md"
 "src/lynx_memory/assets/commands/lynx-memory-history.md" = "lynx_memory/assets/commands/lynx-memory-history.md"
+"src/lynx_memory/assets/commands/lynx-memory-goal.md" = "lynx_memory/assets/commands/lynx-memory-goal.md"
 "src/lynx_memory/assets/skills/openlynx/SKILL.md" = "lynx_memory/assets/skills/openlynx/SKILL.md"
 "src/lynx_memory/assets/web" = "lynx_memory/assets/web"
 

@@ -291,6 +291,38 @@ class _CrudMixin:
             return True
         return self.forget_summary(item_id)
 
+    # ---------- goals ----------
+    def get_goal(self) -> Optional[Dict[str, Any]]:
+        """Return the per-store goal {text, created_at, updated_at} or None."""
+        try:
+            row = self.db.execute(
+                "SELECT text, created_at, updated_at FROM goals WHERE id = 1"
+            ).fetchone()
+        except Exception:
+            return None
+        if not row or not (row["text"] or "").strip():
+            return None
+        return dict(row)
+
+    def set_goal(self, text: str) -> bool:
+        """Upsert the singleton goal for this store. Empty text is ignored."""
+        text = (text or "").strip()
+        if not text:
+            return False
+        now = time.time()
+        self.db.execute(
+            "INSERT INTO goals(id, text, created_at, updated_at) VALUES(1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+            (text, now, now),
+        )
+        self.db.commit()
+        return True
+
+    def clear_goal(self) -> bool:
+        cur = self.db.execute("DELETE FROM goals WHERE id = 1")
+        self.db.commit()
+        return cur.rowcount > 0
+
     # ---------- stats (admin) ----------
     def stats(self) -> Dict[str, int]:
         n_sessions = self.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
