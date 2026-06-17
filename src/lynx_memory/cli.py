@@ -1387,6 +1387,47 @@ def cmd_goal_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------- daily
+
+def cmd_daily(args: argparse.Namespace) -> int:
+    from .daily import build_digest, notify, notify_backend
+
+    target = Path(args.project).expanduser().resolve() if args.project else Path.cwd()
+    data_dir = resolve_data_dir(target)
+    load_env(data_dir)
+
+    name = target.name or "global"
+    today = time.strftime("%m-%d")
+    title = f"今日日报 · {name} · {today}"
+
+    digest, n_turns, _goal = build_digest(data_dir, since_hours=args.since_hours)
+    if n_turns == 0:
+        body = "今天这个项目没有对话记录。"
+    elif not digest:
+        _print_warn("Could not build digest (no summarization LLM key, or the call failed).")
+        body = "（生成摘要失败：未配置可用的 LLM key，或调用出错）"
+    else:
+        body = digest
+    body = f"{body}\n\n———\n来源：{data_dir}\n记录 {n_turns} 轮对话"
+
+    print(f"[{title}]\n{body}\n")
+
+    if not args.notify:
+        return 0
+    if not notify_backend():
+        _print_err(
+            "No notifier configured. Set SERVERCHAN_SENDKEY (WeChat via ServerChan) "
+            "or DAILY_WEBHOOK_URL in your .env."
+        )
+        return 1
+    ok, detail = notify(title, body)
+    if ok:
+        _print_ok(f"Pushed via {notify_backend()}.")
+        return 0
+    _print_err(f"Push failed ({notify_backend()}): {detail}")
+    return 1
+
+
 # --------------------------------------------------------------------- web
 
 def cmd_web(args: argparse.Namespace) -> int:
@@ -1558,6 +1599,24 @@ def main() -> None:
     g_clear.add_argument("--scope", default="auto", choices=["auto", "project", "global"])
     g_clear.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     g_clear.set_defaults(func=cmd_goal_clear)
+
+    sp = sub.add_parser(
+        "daily",
+        help="Summarize a project's turns for today and optionally push to your phone",
+    )
+    sp.add_argument("--project", default=None, help="Project root to read (default: cwd)")
+    sp.add_argument(
+        "--since-hours",
+        type=float,
+        default=None,
+        help="Look back N hours instead of since local midnight",
+    )
+    sp.add_argument(
+        "--notify",
+        action="store_true",
+        help="Push the digest (ServerChan/webhook); without it, only prints",
+    )
+    sp.set_defaults(func=cmd_daily)
 
     args = p.parse_args()
     sys.exit(args.func(args))

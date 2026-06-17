@@ -104,6 +104,8 @@ lynx-memory init-project   在当前目录创建 .lynx-memory/ 标记，启用�
 lynx-memory status         查看数据目录、hook 注册情况、数据库统计、当前目标
 lynx-memory goal           查看 / 设置 / 清除按 scope 划分的目标
                              （goal show | set "..." | clear，可选 --scope）
+lynx-memory daily          汇总项目当天的对话生成日报，可选推送到手机
+                             （--notify；--project、--since-hours）
 lynx-memory doctor         自检 Python、依赖、API key、settings.json
 lynx-memory merge          在项目级 / 全局两个仓库之间合并记忆
                              （--from / --to 选 project|global，可选 --dry-run）
@@ -138,6 +140,28 @@ lynx-memory goal clear         # 清除当前 scope 的目标（需确认）
 `GOAL_GATING_ENABLED`（默认 `1`）、`GOAL_STRICTNESS`（`loose`|`balanced`|`strict`，
 默认 `strict`）、`GOAL_JUDGE_TIMEOUT`（秒，默认 `8`）。修改目标不会删除已存储的
 turn，只影响之后哪些 turn 会被保留。
+
+## 每日日报
+
+`lynx-memory daily` 把项目当天的对话（本地 00:00 起，或 `--since-hours N`）汇总成
+一段简短的「今天我做了什么」日报——优先复用每条已有的摘要，设了目标的话会围绕目标。
+默认只打印，加 `--notify` 推送到手机。
+
+```bash
+lynx-memory daily                                  # 打印当前项目今天的日报
+lynx-memory daily --project ~/code/app --notify    # 生成并推送
+```
+
+推送渠道（从 env 自动识别，或用 `DAILY_NOTIFY_BACKEND` 强制指定）：
+
+| 渠道         | env                  | 说明                                  |
+| ------------ | -------------------- | ------------------------------------- |
+| `serverchan` | `SERVERCHAN_SENDKEY` | 通过 Server酱推送微信                 |
+| `webhook`    | `DAILY_WEBHOOK_URL`  | 通用 JSON `POST {"title","body"}`     |
+
+要每晚自动跑，用系统定时器调度即可。macOS 推荐用 `launchd`（LaunchAgent +
+`StartCalendarInterval`，如 `Hour 21`）运行 `lynx-memory daily --notify --project <路径>`，
+最可靠（能扛休眠/重启）；Linux 用 `cron`。
 
 ## Slash 命令
 

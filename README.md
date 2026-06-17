@@ -111,6 +111,8 @@ lynx-memory init-project   Create a .lynx-memory/ marker in cwd to enable
 lynx-memory status         Show data dir, hook registration, DB stats, active goal
 lynx-memory goal           View/set/clear the per-scope goal
                              (goal show | set "..." | clear, with --scope)
+lynx-memory daily          Summarize a project's turns for today and optionally
+                             push to your phone (--notify; --project, --since-hours)
 lynx-memory doctor         Verify Python, deps, API key, settings.json
 lynx-memory merge          Merge memory between the project and global stores
                              (--from / --to is project|global, with --dry-run)
@@ -147,6 +149,30 @@ summarized). Tunables (`.env`): `GOAL_GATING_ENABLED` (default `1`),
 `GOAL_STRICTNESS` (`loose`|`balanced`|`strict`, default `strict`),
 `GOAL_JUDGE_TIMEOUT` (seconds, default `8`). Changing a goal does not delete
 already-stored turns — it only affects which future turns are kept.
+
+## Daily digest
+
+`lynx-memory daily` summarizes a project's turns for the day (since local
+midnight, or `--since-hours N`) into a short "what I did today" recap — reusing
+each turn's existing summary when present, and steering toward the goal if one
+is set. It prints by default; `--notify` pushes it to your phone.
+
+```bash
+lynx-memory daily                                  # print today's recap for cwd's project
+lynx-memory daily --project ~/code/app --notify    # build + push
+```
+
+Notifier backends (auto-detected from env, or forced via `DAILY_NOTIFY_BACKEND`):
+
+| Backend      | Env                  | Notes                                    |
+| ------------ | -------------------- | ---------------------------------------- |
+| `serverchan` | `SERVERCHAN_SENDKEY` | WeChat push via ServerChan (Server酱)    |
+| `webhook`    | `DAILY_WEBHOOK_URL`  | generic JSON `POST {"title","body"}`     |
+
+To run it automatically every night, schedule it with your OS scheduler. On
+macOS, a `launchd` LaunchAgent with `StartCalendarInterval` (e.g. `Hour 21`)
+running `lynx-memory daily --notify --project <path>` is the most reliable
+option (survives sleep/reboot); on Linux, a `cron` entry works.
 
 ## Slash commands
 
