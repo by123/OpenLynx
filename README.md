@@ -159,8 +159,15 @@ is set. It prints by default; `--notify` pushes it to your phone.
 
 ```bash
 lynx-memory daily                                  # print today's recap for cwd's project
-lynx-memory daily --project ~/code/app --notify    # build + push
+lynx-memory daily --project ~/code/app --notify    # build + push for one project
+lynx-memory daily --all --notify                   # aggregate EVERY store on the machine
 ```
+
+`--all` scans for every store on the machine (the global store + each project's
+`.lynx-memory/`) and produces one cross-project recap grouped by project — so you
+see everything you did today, not just one repo. The scan walks `$HOME` (override
+roots with `LYNX_SCAN_ROOTS`, depth with `LYNX_SCAN_DEPTH`), skipping big/noisy
+directories.
 
 Notifier backends (auto-detected from env, or forced via `DAILY_NOTIFY_BACKEND`):
 
@@ -171,8 +178,9 @@ Notifier backends (auto-detected from env, or forced via `DAILY_NOTIFY_BACKEND`)
 
 To run it automatically every night, schedule it with your OS scheduler. On
 macOS, a `launchd` LaunchAgent with `StartCalendarInterval` (e.g. `Hour 21`)
-running `lynx-memory daily --notify --project <path>` is the most reliable
-option (survives sleep/reboot); on Linux, a `cron` entry works.
+running `lynx-memory daily --all --notify` is the most reliable option; wrap it
+in `caffeinate -i` and add a `pmset repeat wakeorpoweron` a couple of minutes
+earlier so it fires even while the Mac sleeps. On Linux, a `cron` entry works.
 
 ## Slash commands
 

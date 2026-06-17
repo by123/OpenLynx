@@ -1390,25 +1390,38 @@ def cmd_goal_clear(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- daily
 
 def cmd_daily(args: argparse.Namespace) -> int:
-    from .daily import build_digest, notify, notify_backend
+    from .daily import build_digest, build_global_digest, notify, notify_backend
 
-    target = Path(args.project).expanduser().resolve() if args.project else Path.cwd()
-    data_dir = resolve_data_dir(target)
-    load_env(data_dir)
-
-    name = target.name or "global"
     today = time.strftime("%m-%d")
-    title = f"今日日报 · {name} · {today}"
 
-    digest, n_turns, _goal = build_digest(data_dir, since_hours=args.since_hours)
-    if n_turns == 0:
-        body = "今天这个项目没有对话记录。"
-    elif not digest:
-        _print_warn("Could not build digest (no summarization LLM key, or the call failed).")
-        body = "（生成摘要失败：未配置可用的 LLM key，或调用出错）"
+    if args.all:
+        # Aggregate across every store on the machine (global + all projects).
+        load_env(GLOBAL_DATA_DIR)
+        title = f"今日日报 · 全部项目 · {today}"
+        digest, n_turns, n_stores = build_global_digest(since_hours=args.since_hours)
+        if n_turns == 0:
+            body = "今天全机所有项目都没有对话记录。"
+        elif not digest:
+            _print_warn("Could not build digest (no summarization LLM key, or the call failed).")
+            body = "（生成摘要失败：未配置可用的 LLM key，或调用出错）"
+        else:
+            body = digest
+        body = f"{body}\n\n———\n覆盖 {n_stores} 个库 · {n_turns} 轮对话"
     else:
-        body = digest
-    body = f"{body}\n\n———\n来源：{data_dir}\n记录 {n_turns} 轮对话"
+        target = Path(args.project).expanduser().resolve() if args.project else Path.cwd()
+        data_dir = resolve_data_dir(target)
+        load_env(data_dir)
+        name = target.name or "global"
+        title = f"今日日报 · {name} · {today}"
+        digest, n_turns, _goal = build_digest(data_dir, since_hours=args.since_hours)
+        if n_turns == 0:
+            body = "今天这个项目没有对话记录。"
+        elif not digest:
+            _print_warn("Could not build digest (no summarization LLM key, or the call failed).")
+            body = "（生成摘要失败：未配置可用的 LLM key，或调用出错）"
+        else:
+            body = digest
+        body = f"{body}\n\n———\n来源：{data_dir}\n记录 {n_turns} 轮对话"
 
     print(f"[{title}]\n{body}\n")
 
@@ -1605,6 +1618,11 @@ def main() -> None:
         help="Summarize a project's turns for today and optionally push to your phone",
     )
     sp.add_argument("--project", default=None, help="Project root to read (default: cwd)")
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="Aggregate every store on the machine (global + all projects), not just one",
+    )
     sp.add_argument(
         "--since-hours",
         type=float,

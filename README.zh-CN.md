@@ -149,8 +149,13 @@ turn，只影响之后哪些 turn 会被保留。
 
 ```bash
 lynx-memory daily                                  # 打印当前项目今天的日报
-lynx-memory daily --project ~/code/app --notify    # 生成并推送
+lynx-memory daily --project ~/code/app --notify    # 单个项目生成并推送
+lynx-memory daily --all --notify                   # 聚合全机所有库
 ```
+
+`--all` 会扫描全机所有库（全局库 + 每个项目的 `.lynx-memory/`），生成一份**按项目分组**
+的跨项目日报——看到今天在所有项目做了什么，而不止某一个。扫描默认遍历 `$HOME`
+（可用 `LYNX_SCAN_ROOTS` 改根目录、`LYNX_SCAN_DEPTH` 改深度），并跳过大/噪声目录。
 
 推送渠道（从 env 自动识别，或用 `DAILY_NOTIFY_BACKEND` 强制指定）：
 
@@ -161,7 +166,8 @@ lynx-memory daily --project ~/code/app --notify    # 生成并推送
 
 要每晚自动跑，用系统定时器调度即可。macOS 推荐用 `launchd`（LaunchAgent +
 `StartCalendarInterval`，如 `Hour 21`）运行 `lynx-memory daily --notify --project <路径>`，
-最可靠（能扛休眠/重启）；Linux 用 `cron`。
+运行 `lynx-memory daily --all --notify`；用 `caffeinate -i` 包住，并提前两分钟加一条
+`pmset repeat wakeorpoweron`，这样 Mac 休眠时也能按时触发。Linux 用 `cron`。
 
 ## Slash 命令
 

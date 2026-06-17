@@ -65,6 +65,107 @@ def _build_body(turns: List[dict]) -> str:
     return "\n\n---\n\n".join(p for p in parts if p)[:40000]
 
 
+# Dirs we never descend into while hunting for project stores — big/noisy and
+# never hold a .lynx-memory marker in practice. Keeps the home scan fast.
+_PRUNE_DIRS = {
+    "node_modules", ".git", ".hg", ".svn", "Library", ".Trash", "__pycache__",
+    ".cache", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
+    ".npm", ".cargo", ".rustup", "Pictures", "Movies", "Music", "Applications",
+    ".gradle", ".m2", "go", "Pods", "DerivedData", ".next", "target",
+}
+
+_SYSTEM_GLOBAL = (
+    "你是一个开发工作日志助手。下面是用户今天在【多个项目】里与编码助手的对话记忆，"
+    "已按项目分组（可能已是逐条摘要）。请用中文写一份跨项目的『今天我做了什么』日报：\n"
+    "1. 开头一句话总览今天整体在忙什么、涉及哪些项目。\n"
+    "2. 然后【按项目分小节】，每个项目用 2-5 条要点列出具体进展，保留关键文件/命令/版本号。\n"
+    "3. 如有未完成或明天要继续的，单列『待办』。\n"
+    "4. 不要寒暄、不要编造对话里没有的内容，整体控制在 ~400 字。"
+)
+
+
+def discover_stores(roots: Optional[List[Path]] = None, max_depth: int = 6) -> List[Path]:
+    """Find every memory store on the machine: the global store + each project's
+    .lynx-memory/ (with a populated db). Scans `roots` (default: $HOME, or the
+    colon-separated env LYNX_SCAN_ROOTS), pruning big/noisy directories and not
+    descending past `max_depth` levels below each root (projects live shallow;
+    this keeps the nightly scan fast). Override depth via env LYNX_SCAN_DEPTH.
+    """
+    from .config import GLOBAL_DATA_DIR, PROJECT_MARKER
+
+    found: List[Path] = []
+    seen = set()
+
+    if (GLOBAL_DATA_DIR / "db" / "memory.db").exists():
+        found.append(GLOBAL_DATA_DIR)
+        seen.add(GLOBAL_DATA_DIR.resolve())
+
+    if roots is None:
+        env = os.environ.get("LYNX_SCAN_ROOTS", "").strip()
+        roots = [Path(p) for p in env.split(":") if p] if env else [Path.home()]
+
+    env_depth = os.environ.get("LYNX_SCAN_DEPTH", "").strip()
+    if env_depth.isdigit():
+        max_depth = int(env_depth)
+
+    for root in roots:
+        if not root.exists():
+            continue
+        base = len(root.resolve().parts)
+        for dirpath, dirnames, _files in os.walk(root, onerror=lambda e: None):
+            if PROJECT_MARKER in dirnames:
+                cand = Path(dirpath) / PROJECT_MARKER
+                if (cand / "db" / "memory.db").exists():
+                    rp = cand.resolve()
+                    if rp not in seen:
+                        seen.add(rp)
+                        found.append(cand)
+                dirnames.remove(PROJECT_MARKER)  # never descend into a store
+            dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+            if len(Path(dirpath).resolve().parts) - base >= max_depth:
+                dirnames[:] = []  # reached depth limit; stop descending
+    return found
+
+
+def _store_label(data_dir: Path) -> str:
+    from .config import GLOBAL_DATA_DIR
+
+    if data_dir.resolve() == GLOBAL_DATA_DIR.resolve():
+        return "全局"
+    # .../<project>/.lynx-memory -> <project>
+    return data_dir.parent.name or str(data_dir)
+
+
+def build_global_digest(since_hours: Optional[float] = None) -> Tuple[str, int, int]:
+    """Aggregate today's turns across ALL stores on the machine into one recap.
+
+    Returns (digest_text, total_turns, n_stores_with_turns).
+    """
+    from .summarizer import _chat, provider_api_key, provider_order
+
+    sections = []
+    total = 0
+    n_stores = 0
+    for d in discover_stores():
+        turns, _goal = collect_turns(d, since_hours)
+        if not turns:
+            continue
+        n_stores += 1
+        total += len(turns)
+        sections.append(f"## 项目：{_store_label(d)}\n{_build_body(turns)}")
+
+    if total == 0:
+        return "", 0, 0
+
+    body = "\n\n".join(sections)[:60000]
+    for provider in provider_order():
+        if provider_api_key(provider):
+            out = _chat(provider, _SYSTEM_GLOBAL, body, max_tokens=4000, timeout=120)
+            if out:
+                return out.strip(), total, n_stores
+    return "", total, n_stores
+
+
 def build_digest(data_dir: Path, since_hours: Optional[float] = None) -> Tuple[str, int, Optional[str]]:
     """Return (digest_text, n_turns, goal).
 

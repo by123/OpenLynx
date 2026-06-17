@@ -76,6 +76,77 @@ class BuildDigestTest(unittest.TestCase):
         self.assertIn("ship the API", system_arg)
 
 
+class DiscoverStoresTest(unittest.TestCase):
+    def test_depth_and_prune_and_db_required(self):
+        from lynx_memory import daily
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            # a valid project store at depth 1
+            (root / "proj1" / ".lynx-memory" / "db").mkdir(parents=True)
+            (root / "proj1" / ".lynx-memory" / "db" / "memory.db").write_text("x")
+            # store too deep (beyond max_depth=3)
+            deep = root / "a" / "b" / "c" / "d" / "deepproj" / ".lynx-memory" / "db"
+            deep.mkdir(parents=True)
+            (deep / "memory.db").write_text("x")
+            # store inside a pruned dir
+            pruned = root / "node_modules" / "pkg" / ".lynx-memory" / "db"
+            pruned.mkdir(parents=True)
+            (pruned / "memory.db").write_text("x")
+            # marker without a db
+            (root / "proj2" / ".lynx-memory").mkdir(parents=True)
+
+            with mock.patch("lynx_memory.config.GLOBAL_DATA_DIR", root / "no-global"):
+                stores = daily.discover_stores(roots=[root], max_depth=3)
+            names = {s.parent.name for s in stores}
+        self.assertIn("proj1", names)
+        self.assertNotIn("pkg", names)       # pruned
+        self.assertNotIn("deepproj", names)  # too deep
+        self.assertNotIn("proj2", names)     # no db
+
+
+class GlobalDigestTest(unittest.TestCase):
+    def test_aggregates_and_groups_by_store(self):
+        from lynx_memory import daily
+
+        tmps = [tempfile.TemporaryDirectory() for _ in range(2)]
+        dirs = []
+        try:
+            for i, t in enumerate(tmps):
+                d = Path(t.name) / f"app{i}" / ".lynx-memory"
+                d.mkdir(parents=True)
+                with mock.patch("lynx_memory.storage._base.embed_one", return_value=FAKE_VEC):
+                    from lynx_memory.storage import Memory
+
+                    m = Memory(data_dir=d)
+                    try:
+                        m.db.execute(
+                            "INSERT INTO turns(id, session_id, ts, user_msg, assistant_msg, summary) "
+                            "VALUES(?,?,?,?,?,?)",
+                            (f"t{i}", "s", time.time(), "u", "a", f"did thing {i}"),
+                        )
+                        m.db.commit()
+                    finally:
+                        m.close()
+                dirs.append(d)
+
+            with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "k"}, clear=True), mock.patch(
+                "lynx_memory.daily.discover_stores", return_value=dirs
+            ), mock.patch("lynx_memory.summarizer._chat", return_value="combined") as chat:
+                digest, total, n_stores = daily.build_global_digest(since_hours=24)
+
+            self.assertEqual(digest, "combined")
+            self.assertEqual(total, 2)
+            self.assertEqual(n_stores, 2)
+            body = chat.call_args.args[2]
+            self.assertIn("app0", body)
+            self.assertIn("app1", body)
+            self.assertIn("## 项目：", body)
+        finally:
+            for t in tmps:
+                t.cleanup()
+
+
 class NotifyTest(unittest.TestCase):
     def test_backend_autodetect(self):
         from lynx_memory import daily
