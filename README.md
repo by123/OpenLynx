@@ -18,21 +18,20 @@ Claude   : Since you've got Dandan (your golden Border Collie) who needs a lot
 
 ## How it works
 
-Three Claude Code [hooks](https://docs.claude.com/en/docs/claude-code/hooks) +
-a small Python service:
+Three Claude Code [hooks](https://docs.claude.com/en/docs/claude-code/hooks) plus a small Python service:
 
-| Hook              | What it does                                                              |
-| ----------------- | ------------------------------------------------------------------------- |
-| `UserPromptSubmit` | Embeds your prompt and injects the top-K most similar prior turns. When a turn has a summary, the **summary** is injected instead of the raw prose. |
-| `Stop`             | Persists the current user/assistant turn into SQLite + Chroma, then spawns a detached background summarizer that calls the configured API (OpenAI, DeepSeek, or Qwen) to extract long-term memories from the turn. |
-| `SessionEnd`       | Calls the configured API to produce a coarse memory summary of the whole session. |
+| Hook               | What it does                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `UserPromptSubmit` | Embeds your prompt and injects the top-K most similar prior turns (a turn's **summary** is injected instead of raw prose when one exists). |
+| `Stop`             | Persists the current turn into SQLite + Chroma, then spawns a detached summarizer that calls the configured API (OpenAI / DeepSeek / Qwen) to extract long-term memories. |
+| `SessionEnd`       | Calls the configured API to produce a coarse memory summary of the whole session.           |
 
 Storage:
 
-- **SQLite** — source of truth for raw turns, per-turn summaries, and session summaries
-- **Chroma** — local vector index over turns + summaries
-- **Voyage AI** (`voyage-3`) — embeddings
-- **OpenAI** (`gpt-4o-mini`, default), **DeepSeek** (`deepseek-chat`), or **Qwen** (`qwen-turbo`) — per-turn and session summarization (any one of `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `QWEN_API_KEY` is enough)
+- **SQLite** — source of truth for raw turns, per-turn summaries, and session summaries.
+- **Chroma** — local vector index over turns + summaries.
+- **Voyage AI** (`voyage-3.5`) — embeddings.
+- **OpenAI** (`gpt-4o-mini`, default), **DeepSeek** (`deepseek-chat`), or **Qwen** (`qwen-turbo`) — per-turn and session summarization. Any one of `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `QWEN_API_KEY` is enough.
 
 ## Install
 
@@ -43,15 +42,12 @@ lynx-memory init
 
 `init` will:
 
-1. Create the shared OpenLynx home at `~/.openlynx/`
-2. Prompt for your `VOYAGE_API_KEY` (get one free at https://www.voyageai.com/)
-3. Write the default `.env` (`MIN_SCORE=0.7`, `SUMMARY_ENABLED=1`,
-   `SUMMARY_BACKEND=auto`) —
-   set `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `QWEN_API_KEY` to enable per-turn summarization
-   (configurable later via the Web UI ⚙ Settings panel)
-4. Back up your existing `~/.claude/settings.json` and add the three hooks
-5. Link shared commands and the OpenLynx skill into supported host directories
-6. Print verification steps
+1. Create the shared OpenLynx home at `~/.openlynx/`.
+2. Prompt for your `VOYAGE_API_KEY` (get one free at https://www.voyageai.com/).
+3. Write the default `.env` (`MIN_SCORE=0.7`, `SUMMARY_ENABLED=1`, `SUMMARY_BACKEND=auto`) — set `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `QWEN_API_KEY` to enable per-turn summarization (configurable later via the Web UI ⚙ Settings panel).
+4. Back up your existing `~/.claude/settings.json` and add the three hooks.
+5. Link shared commands and the OpenLynx skill into supported host directories.
+6. Print verification steps.
 
 If a legacy `~/.claude/lynx-memory/` store exists and `~/.openlynx/` does not,
 `init` migrates it to `~/.openlynx/` before installing hooks. If both exist,
@@ -90,42 +86,35 @@ lynx-memory init --target codex   # or --target all to install both
 
 This writes `~/.codex/hooks.json`, sets `[features] hooks = true` in
 `~/.codex/config.toml`, and registers three hooks (`UserPromptSubmit` →
-inject, `Stop` → persist, `SessionStart` → summarize the previous session
+inject, `Stop` → persist, `SessionStart` → summarize the previous session,
 since Codex has no `SessionEnd` event).
 
-Codex's `additionalContext` field is fully respected, so retrieved memory
-is injected exactly like in Claude Code. **Restart any running `codex`
-process for hooks to take effect** — they're loaded at session start.
+Codex's `additionalContext` field is fully respected, so retrieved memory is
+injected exactly like in Claude Code. **Restart any running `codex` process for
+hooks to take effect** — they're loaded at session start.
 
 A turn typed in Claude Code can be recalled inside Codex (and vice versa)
-because both write to the same SQLite + Chroma store at
-`~/.openlynx/`.
+because both write to the same SQLite + Chroma store at `~/.openlynx/`.
 
 ## CLI
 
-```
-lynx-memory init           Install hooks, slash commands, and skill links
-                             (--goal "..." to set a global goal non-interactively)
-lynx-memory init-project   Create a .lynx-memory/ marker in cwd to enable
-                             project-level storage (--goal "..." for a project goal)
-lynx-memory status         Show data dir, hook registration, DB stats, active goal
-lynx-memory goal           View/set/clear the per-scope goal
-                             (goal show | set "..." | clear, with --scope)
-lynx-memory daily          Summarize a project's turns for today and optionally
-                             push to your phone (--notify; --project, --since-hours)
-lynx-memory doctor         Verify Python, deps, API key, settings.json
-lynx-memory merge          Merge memory between the project and global stores
-                             (--from / --to is project|global, with --dry-run)
-lynx-memory delete         Permanently delete memory for a scope
-                             (--scope project|global|both, with double confirm)
-lynx-memory uninstall      Remove hooks, slash commands, and skill links (keeps your data)
-```
+| Command                  | What it does                                                                              |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| `lynx-memory init`       | Install hooks, slash commands, and skill links (`--goal "…"` sets a global goal).         |
+| `lynx-memory init-project` | Create a `.lynx-memory/` marker in cwd to enable project-level storage (`--goal "…"`).  |
+| `lynx-memory status`     | Show data dir, hook registration, DB stats, and the active goal.                          |
+| `lynx-memory goal`       | View/set/clear the per-scope goal (`goal show \| set "…" \| clear`, with `--scope`).      |
+| `lynx-memory daily`      | Summarize a project's turns for today, optionally push to your phone (`--notify`, `--all`, `--project`, `--since-hours`). |
+| `lynx-memory doctor`     | Verify Python, deps, API key, and `settings.json`.                                        |
+| `lynx-memory merge`      | Merge memory between the project and global stores (`--from` / `--to`, with `--dry-run`). |
+| `lynx-memory delete`     | Permanently delete memory for a scope (`--scope project\|global\|both`, double confirm).  |
+| `lynx-memory uninstall`  | Remove hooks, slash commands, and skill links (keeps your data).                          |
 
 ## Goals
 
-A **goal** is an optional, per-scope (project or global) statement of what you're
-working toward. You can set one at install time (`lynx-memory init`/`init-project`
-prompt for it, or pass `--goal "..."`) or any time afterwards:
+A **goal** is an optional, per-scope (project or global) statement of what
+you're working toward. Set one at install time (`lynx-memory init` /
+`init-project` prompt for it, or pass `--goal "…"`) or any time afterwards:
 
 ```bash
 lynx-memory goal set "Ship the v2 billing API and migrate existing customers"
@@ -136,19 +125,23 @@ lynx-memory goal clear         # active scope, asks to confirm
 When a goal is set, OpenLynx changes two behaviors for that store:
 
 - **Storage gating** — before a turn is persisted, the configured summarization
-  LLM (OpenAI / DeepSeek / Qwen) judges whether it is relevant to the goal. Turns
-  judged irrelevant never enter the database. The judgement is **strict** by
-  default and **fails open**: if no LLM key is configured or the call errors out,
-  the turn is stored, so memory is never lost on a hiccup. Every dropped turn is
-  logged to `db/hook.log`.
+  LLM (OpenAI / DeepSeek / Qwen) judges whether it is relevant to the goal.
+  Turns judged irrelevant never enter the database. The judgement is **strict**
+  by default and **fails open**: if no LLM key is configured or the call errors
+  out, the turn is stored, so memory is never lost on a hiccup. Every dropped
+  turn is logged to `db/hook.log`.
 - **Goal-focused summaries** — per-turn and per-session summaries are steered to
   prioritise information that advances the goal.
 
 With no goal set, memory behaves exactly as before (every turn stored and
-summarized). Tunables (`.env`): `GOAL_GATING_ENABLED` (default `1`),
-`GOAL_STRICTNESS` (`loose`|`balanced`|`strict`, default `strict`),
-`GOAL_JUDGE_TIMEOUT` (seconds, default `8`). Changing a goal does not delete
-already-stored turns — it only affects which future turns are kept.
+summarized). Changing a goal does not delete already-stored turns — it only
+affects which future turns are kept. Tunables (`.env`):
+
+| Variable              | Default  | Purpose                                          |
+| --------------------- | -------- | ------------------------------------------------ |
+| `GOAL_GATING_ENABLED` | `1`      | Set `0` to keep storing every turn even with a goal |
+| `GOAL_STRICTNESS`     | `strict` | `loose` \| `balanced` \| `strict`                |
+| `GOAL_JUDGE_TIMEOUT`  | `8`      | Seconds for the relevance LLM call (`0` = none)  |
 
 ## Daily digest
 
@@ -164,17 +157,17 @@ lynx-memory daily --all --notify                   # aggregate EVERY store on th
 ```
 
 `--all` scans for every store on the machine (the global store + each project's
-`.lynx-memory/`) and produces one cross-project recap grouped by project — so you
-see everything you did today, not just one repo. The scan walks `$HOME` (override
-roots with `LYNX_SCAN_ROOTS`, depth with `LYNX_SCAN_DEPTH`), skipping big/noisy
-directories.
+`.lynx-memory/`) and produces one cross-project recap grouped by project — so
+you see everything you did today, not just one repo. The scan walks `$HOME`
+(override roots with `LYNX_SCAN_ROOTS`, depth with `LYNX_SCAN_DEPTH`), skipping
+big/noisy directories.
 
 Notifier backends (auto-detected from env, or forced via `DAILY_NOTIFY_BACKEND`):
 
-| Backend      | Env                  | Notes                                    |
-| ------------ | -------------------- | ---------------------------------------- |
-| `serverchan` | `SERVERCHAN_SENDKEY` | WeChat push via ServerChan (Server酱)    |
-| `webhook`    | `DAILY_WEBHOOK_URL`  | generic JSON `POST {"title","body"}`     |
+| Backend      | Env                  | Notes                                 |
+| ------------ | -------------------- | ------------------------------------- |
+| `serverchan` | `SERVERCHAN_SENDKEY` | WeChat push via ServerChan (Server酱) |
+| `webhook`    | `DAILY_WEBHOOK_URL`  | Generic JSON `POST {"title","body"}`  |
 
 To run it automatically every night, schedule it with your OS scheduler. On
 macOS, a `launchd` LaunchAgent with `StartCalendarInterval` (e.g. `Hour 21`)
@@ -188,40 +181,39 @@ earlier so it fires even while the Mac sleeps. On Linux, a `cron` entry works.
 `~/.openlynx/commands/` and links them into host command directories such as
 `~/.claude/commands/` and `~/.codex/commands/`:
 
-| Command                         | What it does                                                |
-| ------------------------------- | ----------------------------------------------------------- |
-| `/lynx-memory-status`         | Show current scope (project vs global) with stats for both  |
-| `/lynx-memory-goal`           | View or set the per-scope goal (gates storage, focuses summaries)|
-| `/lynx-memory-pull-global`    | Merge global memory into the current project (global → proj)|
-| `/lynx-memory-push-global`    | Merge current project memory into global (proj → global)    |
-| `/lynx-memory-delete`         | Delete memory with mandatory double confirm (`DELETE` + `y`)|
-| `/lynx-memory-history`        | Open a local Web UI to browse, search, tag, and delete turns|
+| Command                    | What it does                                                       |
+| -------------------------- | ----------------------------------------------------------------- |
+| `/lynx-memory-status`      | Show current scope (project vs global) with stats for both.       |
+| `/lynx-memory-goal`        | View or set the per-scope goal (gates storage, focuses summaries).|
+| `/lynx-memory-pull-global` | Merge global memory into the current project (global → project).  |
+| `/lynx-memory-push-global` | Merge current project memory into global (project → global).      |
+| `/lynx-memory-delete`      | Delete memory with mandatory double confirm (`DELETE` + `y`).     |
+| `/lynx-memory-history`     | Open a local Web UI to browse, search, tag, and delete turns.     |
 
-Each of these runs `lynx-memory status` / `merge --dry-run` first and asks
-for your approval before any write or destructive action.
+Each of these runs `lynx-memory status` / `merge --dry-run` first and asks for
+your approval before any write or destructive action.
 
 ## Skills
 
 `lynx-memory init` installs the bundled OpenLynx skill into
 `~/.openlynx/skills/openlynx/` and links it into supported host skill
-directories such as `~/.claude/skills/openlynx` and
-`~/.codex/skills/openlynx`.
+directories such as `~/.claude/skills/openlynx` and `~/.codex/skills/openlynx`.
 
 ## Web UI
 
 ![OpenLynx Web UI](./docs/assets/web.png)
 
-Type `/lynx-memory-history` in Claude Code (or run `lynx-memory web`) to
-launch a local FastAPI + React UI on `127.0.0.1`. The page opens automatically
-in your browser and lets you:
+Type `/lynx-memory-history` in Claude Code (or run `lynx-memory web`) to launch
+a local FastAPI + React UI on `127.0.0.1`. The page opens automatically in your
+browser and lets you:
 
-- Switch between **project** and **global** scopes
-- Page through every saved turn
-- Search by **keyword** (SQL `LIKE`) or **semantic** similarity (Voyage embeddings)
-- Tag turns (e.g. `#work`, `#personal`) and filter by tag
-- Delete a single turn (also clears its embedding from Chroma)
-- See the per-turn **summary** above each turn, with a one-click button to (re)generate it on demand
-- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (OpenAI / DeepSeek / Qwen), model, Top-K, min score, and retrieval scope — changes are saved directly to `~/.openlynx/.env`
+- Switch between **project** and **global** scopes.
+- Page through every saved turn.
+- Search by **keyword** (SQL `LIKE`) or **semantic** similarity (Voyage embeddings).
+- Tag turns (e.g. `#work`, `#personal`) and filter by tag.
+- Delete a single turn (also clears its embedding from Chroma).
+- See the per-turn **summary** above each turn, with a one-click button to (re)generate it on demand.
+- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (OpenAI / DeepSeek / Qwen), model, Top-K, min score, and retrieval scope — saved directly to `~/.openlynx/.env`.
 
 ### Usage
 
@@ -239,14 +231,14 @@ lynx-memory web --port 0
 lynx-memory web --no-open
 ```
 
-| Action               | What happens on disk                                                        |
-| -------------------- | --------------------------------------------------------------------------- |
-| **Delete a turn**    | Row removed from SQLite `turns` and `turn_tags`; embedding removed from Chroma |
-| **Add a tag**        | Inserted into SQLite `tags` (created on demand) and `turn_tags`             |
-| **Remove a tag**     | Row removed from `turn_tags`; orphaned tag is GC'd from `tags`              |
-| **Search (keyword)** | SQL `LIKE` over `user_msg` and `assistant_msg` — no embedding call          |
-| **Search (semantic)**| One Voyage embedding per query, then top-K from Chroma                      |
-| **Regenerate summary** | One API call (OpenAI, DeepSeek, or Qwen, per `SUMMARY_BACKEND`); writes `summary` / `summary_model` / `summary_ts` back into the `turns` row |
+| Action                 | What happens on disk                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------ |
+| **Delete a turn**      | Row removed from SQLite `turns` and `turn_tags`; embedding removed from Chroma.             |
+| **Add a tag**          | Inserted into SQLite `tags` (created on demand) and `turn_tags`.                            |
+| **Remove a tag**       | Row removed from `turn_tags`; orphaned tag is GC'd from `tags`.                             |
+| **Search (keyword)**   | SQL `LIKE` over `user_msg` and `assistant_msg` — no embedding call.                         |
+| **Search (semantic)**  | One Voyage embedding per query, then top-K from Chroma.                                     |
+| **Regenerate summary** | One API call (per `SUMMARY_BACKEND`); writes `summary` / `summary_model` / `summary_ts` back into the `turns` row. |
 
 The server only binds to `127.0.0.1`. Press `Ctrl+C` to stop it.
 
@@ -259,36 +251,37 @@ cd ~/code/my-project
 lynx-memory init-project
 ```
 
-It creates a `.lynx-memory/` marker. As long as your cwd is inside that
-project, memory transparently switches to the project-level store at
-`<project>/.lynx-memory/db/`, isolated from the global one at
-`~/.openlynx/`.
+It creates a `.lynx-memory/` marker. As long as your cwd is inside that project,
+memory transparently switches to the project-level store at
+`<project>/.lynx-memory/db/`, isolated from the global one at `~/.openlynx/`.
 
 Use `/lynx-memory-status` to inspect the active scope, and
-`/lynx-memory-pull-global` / `/lynx-memory-push-global` to move history
-between the two layers.
+`/lynx-memory-pull-global` / `/lynx-memory-push-global` to move history between
+the two layers.
 
 ## Configuration
 
 All optional, set in `~/.openlynx/.env`:
 
-| Variable                       | Default                              | Purpose                                    |
-| ------------------------------ | ------------------------------------ | ------------------------------------------ |
-| `VOYAGE_API_KEY`               | —                                    | Required for embeddings                    |
-| `TOP_K`                        | `5`                                  | Max memories injected per prompt           |
-| `MIN_SCORE`                    | `0.7`                                | Cosine similarity floor (0–1)              |
-| `SUMMARY_ENABLED`              | `1`                                  | Set `0`/`false` to disable per-turn summarization |
-| `SUMMARY_BACKEND`              | `auto`                               | `auto` → first provider with a key set (OpenAI → DeepSeek → Qwen); force with `openai`, `deepseek`, or `qwen` |
-| `OPENAI_API_KEY`               | —                                    | Required when `SUMMARY_BACKEND=openai`     |
-| `OPENAI_MODEL`                 | `gpt-4o-mini`                        | OpenAI model used for summarization        |
-| `OPENAI_BASE_URL`              | `https://api.openai.com/v1`          | Override for OpenAI-compatible endpoints   |
-| `DEEPSEEK_API_KEY`             | —                                    | Required when `SUMMARY_BACKEND=deepseek`   |
-| `DEEPSEEK_MODEL`               | `deepseek-chat`                      | DeepSeek model used for summarization      |
-| `DEEPSEEK_BASE_URL`            | `https://api.deepseek.com/v1`        | Override for the DeepSeek endpoint         |
-| `QWEN_API_KEY`                 | —                                    | Required when `SUMMARY_BACKEND=qwen` (`DASHSCOPE_API_KEY` also accepted) |
-| `QWEN_MODEL`                   | `qwen-turbo`                         | Qwen model used for summarization          |
-| `QWEN_BASE_URL`                | DashScope compatible-mode URL        | Override for the Qwen/DashScope endpoint   |
-| `LYNX_MEMORY_DIR`              | `~/.openlynx`                         | Where SQLite + Chroma live                 |
+| Variable          | Default                       | Purpose                                            |
+| ----------------- | ----------------------------- | -------------------------------------------------- |
+| `VOYAGE_API_KEY`  | —                             | Required for embeddings                            |
+| `TOP_K`           | `5`                           | Max memories injected per prompt                   |
+| `MIN_SCORE`       | `0.7`                         | Cosine similarity floor (0–1)                      |
+| `SUMMARY_ENABLED` | `1`                           | Set `0`/`false` to disable per-turn summarization  |
+| `SUMMARY_BACKEND` | `auto`                        | `auto` → first provider with a key (OpenAI → DeepSeek → Qwen); force with `openai`, `deepseek`, or `qwen` |
+| `OPENAI_API_KEY`  | —                             | Required when `SUMMARY_BACKEND=openai`             |
+| `OPENAI_MODEL`    | `gpt-4o-mini`                 | OpenAI model used for summarization                |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1`   | Override for OpenAI-compatible endpoints           |
+| `DEEPSEEK_API_KEY`| —                             | Required when `SUMMARY_BACKEND=deepseek`           |
+| `DEEPSEEK_MODEL`  | `deepseek-chat`               | DeepSeek model used for summarization              |
+| `DEEPSEEK_BASE_URL`| `https://api.deepseek.com/v1`| Override for the DeepSeek endpoint                 |
+| `QWEN_API_KEY`    | —                             | Required when `SUMMARY_BACKEND=qwen` (`DASHSCOPE_API_KEY` also accepted) |
+| `QWEN_MODEL`      | `qwen-turbo`                  | Qwen model used for summarization                  |
+| `QWEN_BASE_URL`   | DashScope compatible-mode URL | Override for the Qwen/DashScope endpoint           |
+| `LYNX_MEMORY_DIR` | `~/.openlynx`                 | Where SQLite + Chroma live                         |
+
+See [Goals](#goals) and [Daily digest](#daily-digest) for their own env vars.
 
 ## Optional: MCP server
 
@@ -317,21 +310,18 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 ## Privacy
 
 - All data stays on your machine in `~/.openlynx/`.
-- Outbound calls: **Voyage AI** for embeddings (your prompt text); **OpenAI**, **DeepSeek**, or **Qwen**
-  for per-turn and session summaries (requires an API key — set via `.env` or the Web UI ⚙ Settings panel).
+- Outbound calls: **Voyage AI** for embeddings (your prompt text); **OpenAI**, **DeepSeek**, or **Qwen** for per-turn and session summaries (requires an API key — set via `.env` or the Web UI ⚙ Settings panel).
 - Set `SUMMARY_ENABLED=0` if you don't want per-turn summaries to leave the box.
-- Set `LYNX_MEMORY_DIR` to encrypt at rest with whatever filesystem-level
-  encryption your OS provides.
+- Set `LYNX_MEMORY_DIR` to encrypt at rest with whatever filesystem-level encryption your OS provides.
 
 ## Roadmap
 
 - [x] **Project-level / global dual-layer storage**
   Global by default; auto-switches to project-level when a `.lynx-memory/`
-  marker is found by walking up from cwd, so histories from different
-  projects don't bleed into each other. Run `lynx-memory init-project`
-  in a project root to create the marker. Search supports
-  `scope=auto|project|global|merged` (hooks via `LYNX_MEMORY_SCOPE` env;
-  MCP tools accept a `scope` argument).
+  marker is found by walking up from cwd, so histories from different projects
+  don't bleed into each other. Run `lynx-memory init-project` in a project root
+  to create the marker. Search supports `scope=auto|project|global|merged`
+  (hooks via `LYNX_MEMORY_SCOPE` env; MCP tools accept a `scope` argument).
 
 - [x] **Codex CLI** — same hooks + shared store; use `lynx-memory init --target codex` (or `--target all`). See [Codex CLI](#codex-cli-cross-host-memory) above.
 
@@ -341,25 +331,28 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
   `/lynx-memory-history` (or `lynx-memory web`); the page exposes both
   project-level and global histories with a one-click scope toggle.
 
+- [x] **Goals & daily digest** — set a per-scope goal to gate storage and focus summaries; `lynx-memory daily` recaps your day (per project or `--all`) and can push it to your phone.
+
 - [ ] **Other CLIs (Cursor, Gemini CLI, …)** — not integrated yet. **Cursor**: blocked until a stable hooks surface ships (we plan to adopt it once available); meanwhile MCP-only workflows remain possible where applicable.
+
 - [ ] **Unified multi-client installer**
-  A future `lynx-memory install --client <name>` to write MCP configs in one shot,
-  with rules templates for consistent recall across clients that support them.
+  A future `lynx-memory install --client <name>` to write MCP configs in one
+  shot, with rules templates for consistent recall across clients that support them.
 
 - [ ] **Import / export & cross-device sync**
-  `lynx-memory export` / `import` for JSONL backup and restore; place `db/`
-  in iCloud / Dropbox / a Git repo, or use a built-in `lynx-memory sync`
-  subcommand to share memory across machines.
+  `lynx-memory export` / `import` for JSONL backup and restore; place `db/` in
+  iCloud / Dropbox / a Git repo, or use a built-in `lynx-memory sync` subcommand
+  to share memory across machines.
 
 - [ ] **Richer automatic tagging (precise vs associative)**
-  Stronger auto-labeling for turns, with a switchable **precise** mode
-  (tight, literal, auditable tags) vs **associative** mode (broader links
-  and softer clusters to improve semantic recall).
+  Stronger auto-labeling for turns, with a switchable **precise** mode (tight,
+  literal, auditable tags) vs **associative** mode (broader links and softer
+  clusters to improve semantic recall).
 
 - [ ] **Recall modes & tunable ranking**
-  Let users steer what gets injected beyond raw similarity — combine signals such as
-  **retrieval / hit count**, **relevance score**, and **recency** (last used or last
-  injected), with presets or manual weighting so priority matches your workflow.
+  Let users steer what gets injected beyond raw similarity — combine signals
+  such as **retrieval / hit count**, **relevance score**, and **recency**, with
+  presets or manual weighting so priority matches your workflow.
 
 ## License
 
