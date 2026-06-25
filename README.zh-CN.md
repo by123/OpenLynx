@@ -192,13 +192,14 @@ lynx-memory daily --all --notify                   # 聚合全机所有库
 在 Claude Code 里输 `/lynx-memory-history`（或直接跑 `lynx-memory web`），会在
 `127.0.0.1` 启动一个 FastAPI + React 的本地服务并自动开浏览器。在页面里你可以：
 
+- 以**卡片画廊**浏览记忆；点任意卡片，在右侧**抽屉**里查看完整内容、摘要、标签和被调用记录。
+- 在 **记忆**（已存的 turn）与 **检索记录**（记忆被后续提问调用的记录）两个视角间切换。
 - 在 **项目级** 与 **全局** 之间一键切换。
-- 翻页浏览所有 turn。
-- **关键字**（SQL `LIKE`）或 **语义** 搜索（基于 Voyage 向量）。
-- 给单条 turn 打标签（如 `#work`、`#personal`），并按标签过滤。
+- **关键字**（SQL `LIKE`）或 **语义** 搜索（基于 Voyage 向量）、**按日期筛选**、按**标签**过滤，或按**最常被检索**排序。
+- 给单条 turn 打标签（如 `#work`、`#personal`），删除单条 turn（同时清掉 Chroma 里的向量）。
 - 自动生成**类型化标签**，区分 `user` / `project` / `module` / `custom`。
-- 删除单条 turn（同时清掉 Chroma 里的向量）。
-- 每条 turn 顶部显示**摘要**，可一键"重新生成"。
+- 卡片以**摘要**为主，可一键"重新生成"。
+- 切换界面语言——**默认英文**，可在顶栏一键切到**中文**。
 - 点击右上角 **⚙ 设置图标** 打开**设置面板**，在浏览器里直接配置所有选项：API Key、摘要后端（OpenAI / DeepSeek / Qwen）、模型、Top-K、相似度阈值、召回范围——保存后自动写入 `~/.openlynx/.env`。
 
 ### 使用方式
@@ -226,6 +227,7 @@ UI 上的操作直接落库：
 | **移除标签**     | 删 `turn_tags`；如果该标签没人用了，再清 `tags` 里的孤立行。        |
 | **关键字搜索**   | SQL `LIKE` 直查 `user_msg` / `assistant_msg`，不调用 embedding 接口。|
 | **语义搜索**     | 调一次 Voyage 算 query 向量，再从 Chroma 取 top-K。                 |
+| **按日期筛选**   | 按 turn 时间戳做 SQL 过滤（`ts >= 当天起 AND ts < 次日`），不调用 embedding 接口。 |
 | **重新生成摘要** | 调一次 API（取决于 `SUMMARY_BACKEND`），把 `summary` / `summary_model` / `summary_ts` 写回 `turns`。 |
 
 服务只监听 `127.0.0.1`，按 `Ctrl+C` 关闭。
@@ -349,6 +351,12 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 
 - [ ] **召回模式与可配置优先级**
   在纯语义相似度之外，支持按 **召回次数**、**最相关**（相似度得分）、**最近使用**（最近命中 / 注入）等信号组合排序；提供预设模板，并允许手动调节权重或优先级规则。
+
+## 更新日志
+
+完整历史见 [GitHub Releases](https://github.com/by123/OpenLynx/releases)。
+
+- **0.5.0** — Web UI 重做：全宽卡片画廊 + 右侧详情抽屉，暖色主题；界面国际化（**默认英文**，一键切**中文**）；记忆列表支持**按日期筛选**（`/api/turns` 新增 `since` / `until`）。
 
 ## 协议
 

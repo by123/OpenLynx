@@ -207,12 +207,13 @@ Type `/lynx-memory-history` in Claude Code (or run `lynx-memory web`) to launch
 a local FastAPI + React UI on `127.0.0.1`. The page opens automatically in your
 browser and lets you:
 
+- Browse memory as a **card gallery**; click any card to open its full content, summary, tags and retrieval history in a side **drawer**.
+- Switch lens between **Memory** (stored turns) and **Retrievals** (when a memory was recalled by a later prompt).
 - Switch between **project** and **global** scopes.
-- Page through every saved turn.
-- Search by **keyword** (SQL `LIKE`) or **semantic** similarity (Voyage embeddings).
-- Tag turns (e.g. `#work`, `#personal`) and filter by tag.
-- Delete a single turn (also clears its embedding from Chroma).
-- See the per-turn **summary** above each turn, with a one-click button to (re)generate it on demand.
+- Search by **keyword** (SQL `LIKE`) or **semantic** similarity (Voyage embeddings), **filter by date**, filter by **tag**, or sort by **most-retrieved**.
+- Tag turns (e.g. `#work`, `#personal`) and delete a single turn (also clears its embedding from Chroma).
+- See the per-turn **summary** as the card lead, with a one-click button to (re)generate it on demand.
+- Switch interface language — **English by default**, with a one-click **中文** toggle in the top bar.
 - Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (OpenAI / DeepSeek / Qwen), model, Top-K, min score, and retrieval scope — saved directly to `~/.openlynx/.env`.
 
 ### Usage
@@ -238,6 +239,7 @@ lynx-memory web --no-open
 | **Remove a tag**       | Row removed from `turn_tags`; orphaned tag is GC'd from `tags`.                             |
 | **Search (keyword)**   | SQL `LIKE` over `user_msg` and `assistant_msg` — no embedding call.                         |
 | **Search (semantic)**  | One Voyage embedding per query, then top-K from Chroma.                                     |
+| **Filter by date**     | SQL filter on the turn timestamp (`ts >= start AND ts < start + 1 day`) — no embedding call. |
 | **Regenerate summary** | One API call (per `SUMMARY_BACKEND`); writes `summary` / `summary_model` / `summary_ts` back into the `turns` row. |
 
 The server only binds to `127.0.0.1`. Press `Ctrl+C` to stop it.
@@ -353,6 +355,12 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
   Let users steer what gets injected beyond raw similarity — combine signals
   such as **retrieval / hit count**, **relevance score**, and **recency**, with
   presets or manual weighting so priority matches your workflow.
+
+## Changelog
+
+Full history on [GitHub Releases](https://github.com/by123/OpenLynx/releases).
+
+- **0.5.0** — Redesigned web UI: full-width card gallery + side detail drawer, warm theme. Interface internationalized (**English by default**, one-click **中文**). Date filter on the memory list (`/api/turns` gains `since` / `until`).
 
 ## License
 
