@@ -133,6 +133,8 @@ class _CrudMixin:
         offset: int = 0,
         query: Optional[str] = None,
         tag: Optional[str] = None,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         sql = (
             "SELECT t.id, t.session_id, t.ts, t.cwd, t.user_msg, t.assistant_msg, "
@@ -149,6 +151,12 @@ class _CrudMixin:
             wheres.append("(t.user_msg LIKE ? OR t.assistant_msg LIKE ?)")
             like = f"%{query}%"
             params.extend([like, like])
+        if since is not None:
+            wheres.append("t.ts >= ?")
+            params.append(since)
+        if until is not None:
+            wheres.append("t.ts < ?")
+            params.append(until)
         if wheres:
             sql += " WHERE " + " AND ".join(wheres)
         sql += " ORDER BY t.ts DESC LIMIT ? OFFSET ?"
@@ -156,7 +164,13 @@ class _CrudMixin:
         rows = [dict(r) for r in self.db.execute(sql, params).fetchall()]
         return self._attach_tags(rows)
 
-    def count_turns(self, query: Optional[str] = None, tag: Optional[str] = None) -> int:
+    def count_turns(
+        self,
+        query: Optional[str] = None,
+        tag: Optional[str] = None,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+    ) -> int:
         sql = "SELECT COUNT(*) FROM turns t"
         params: list = []
         wheres: list = []
@@ -168,6 +182,12 @@ class _CrudMixin:
             wheres.append("(t.user_msg LIKE ? OR t.assistant_msg LIKE ?)")
             like = f"%{query}%"
             params.extend([like, like])
+        if since is not None:
+            wheres.append("t.ts >= ?")
+            params.append(since)
+        if until is not None:
+            wheres.append("t.ts < ?")
+            params.append(until)
         if wheres:
             sql += " WHERE " + " AND ".join(wheres)
         return int(self.db.execute(sql, params).fetchone()[0])

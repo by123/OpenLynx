@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppSettings } from "../types";
+import { useI18n } from "../i18n";
 
 const OPENAI_MODELS = [
   // GPT-5.x series (Responses API)
@@ -90,16 +91,17 @@ function KeyRow({
   onClear: () => void;
   placeholder: string;
 }) {
+  const { t } = useI18n();
   return (
     <div className="settings-row">
       <div className="settings-label">
         <span>{label}</span>
         <span className="settings-hint">
           {pendingKey === ""
-            ? <span className="settings-key-status unset">○ will be removed</span>
+            ? <span className="settings-key-status unset">{t("settings.key.willRemove")}</span>
             : (isSet || (pendingKey !== null && pendingKey.length > 0))
-              ? <span className="settings-key-status set">● configured</span>
-              : <span className="settings-key-status unset">○ not set</span>}
+              ? <span className="settings-key-status set">{t("settings.key.configured")}</span>
+              : <span className="settings-key-status unset">{t("settings.key.notset")}</span>}
         </span>
       </div>
       <div className="settings-key-field">
@@ -112,7 +114,7 @@ function KeyRow({
           autoComplete="off"
         />
         {isSet && pendingKey === null && (
-          <button className="settings-key-clear" onClick={onClear} title="Remove key">✕</button>
+          <button className="settings-key-clear" onClick={onClear} title={t("settings.key.remove")}>✕</button>
         )}
       </div>
     </div>
@@ -120,6 +122,7 @@ function KeyRow({
 }
 
 export function SettingsPanel({ open, onClose }: Props) {
+  const { t } = useI18n();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [openaiKey, setOpenaiKey] = useState<string | null>(null);
   const [voyageKey, setVoyageKey] = useState<string | null>(null);
@@ -205,25 +208,25 @@ export function SettingsPanel({ open, onClose }: Props) {
 
   return (
     <div className="settings-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="settings-panel" ref={panelRef} role="dialog" aria-modal="true" aria-label="Settings">
+      <div className="settings-panel" ref={panelRef} role="dialog" aria-modal="true" aria-label={t("settings.title")}>
         <div className="settings-header">
-          <span className="settings-title">Settings</span>
-          <button className="settings-close" onClick={onClose} aria-label="close">✕</button>
+          <span className="settings-title">{t("settings.title")}</span>
+          <button className="settings-close" onClick={onClose} aria-label={t("close")}>✕</button>
         </div>
 
         {loading ? (
-          <div className="settings-loading">Loading…</div>
+          <div className="settings-loading">{t("loading")}</div>
         ) : (
           <div className="settings-body">
 
             {/* ── Embeddings ── */}
             <section className="settings-section">
-              <div className="settings-section-title">Embeddings</div>
+              <div className="settings-section-title">{t("settings.sec.embeddings")}</div>
 
               <div className="settings-row">
                 <div className="settings-label">
-                  <span>Backend</span>
-                  <span className="settings-hint">Embedding provider for semantic search</span>
+                  <span>{t("settings.backend")}</span>
+                  <span className="settings-hint">{t("settings.backend.hint.embed")}</span>
                 </div>
                 <select
                   className="settings-select"
@@ -239,7 +242,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                 <>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Voyage model</span>
+                      <span>{t("settings.voyageModel")}</span>
                     </div>
                     <select
                       className="settings-select"
@@ -260,9 +263,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                     placeholder="pa-…"
                   />
                   {!settings.voyage_api_key_set && voyageKey === null && (
-                    <div className="settings-warning">
-                      ⚠ Voyage API key is required for semantic search and memory injection.
-                    </div>
+                    <div className="settings-warning">{t("settings.warn.voyage")}</div>
                   )}
                 </>
               )}
@@ -271,7 +272,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                 <>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>OpenAI embedding model</span>
+                      <span>{t("settings.openaiEmbedModel")}</span>
                     </div>
                     <select
                       className="settings-select"
@@ -292,9 +293,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                     placeholder="sk-…"
                   />
                   {!settings.openai_api_key_set && openaiKey === null && (
-                    <div className="settings-warning">
-                      ⚠ OpenAI API key is required for embedding.
-                    </div>
+                    <div className="settings-warning">{t("settings.warn.openaiEmbed")}</div>
                   )}
                 </>
               )}
@@ -302,12 +301,12 @@ export function SettingsPanel({ open, onClose }: Props) {
 
             {/* ── Memory Injection ── */}
             <section className="settings-section">
-              <div className="settings-section-title">Memory Injection</div>
+              <div className="settings-section-title">{t("settings.sec.injection")}</div>
 
               <div className="settings-row">
                 <div className="settings-label">
-                  <span>Top-K results</span>
-                  <span className="settings-hint">Memories injected per prompt</span>
+                  <span>{t("settings.topk")}</span>
+                  <span className="settings-hint">{t("settings.topk.hint")}</span>
                 </div>
                 <div className="settings-control">
                   <input
@@ -321,8 +320,8 @@ export function SettingsPanel({ open, onClose }: Props) {
 
               <div className="settings-row">
                 <div className="settings-label">
-                  <span>Min score</span>
-                  <span className="settings-hint">Minimum similarity threshold (0–1)</span>
+                  <span>{t("settings.minScore")}</span>
+                  <span className="settings-hint">{t("settings.minScore.hint")}</span>
                 </div>
                 <div className="settings-control">
                   <input
@@ -336,29 +335,29 @@ export function SettingsPanel({ open, onClose }: Props) {
 
               <div className="settings-row">
                 <div className="settings-label">
-                  <span>Retrieval scope</span>
-                  <span className="settings-hint">Which memory store to search</span>
+                  <span>{t("settings.retrScope")}</span>
+                  <span className="settings-hint">{t("settings.retrScope.hint")}</span>
                 </div>
                 <select
                   className="settings-select"
                   value={settings.scope}
                   onChange={(e) => setSettings((s) => ({ ...s, scope: e.target.value }))}
                 >
-                  <option value="auto">auto (project → global)</option>
-                  <option value="global">global only</option>
-                  <option value="project">project only</option>
+                  <option value="auto">{t("settings.scope.auto")}</option>
+                  <option value="global">{t("settings.scope.global")}</option>
+                  <option value="project">{t("settings.scope.project")}</option>
                 </select>
               </div>
             </section>
 
             {/* ── Summarization ── */}
             <section className="settings-section">
-              <div className="settings-section-title">Summarization</div>
+              <div className="settings-section-title">{t("settings.sec.summarization")}</div>
 
               <div className="settings-row">
                 <div className="settings-label">
-                  <span>Enable summarization</span>
-                  <span className="settings-hint">Generate a compact summary after each turn</span>
+                  <span>{t("settings.enableSummary")}</span>
+                  <span className="settings-hint">{t("settings.enableSummary.hint")}</span>
                 </div>
                 <button
                   className={`settings-toggle${settings.summary_enabled ? " on" : ""}`}
@@ -371,8 +370,8 @@ export function SettingsPanel({ open, onClose }: Props) {
 
               <div className="settings-row">
                 <div className="settings-label">
-                  <span>Backend</span>
-                  <span className="settings-hint">API provider for summarization</span>
+                  <span>{t("settings.backend")}</span>
+                  <span className="settings-hint">{t("settings.backend.hint.summary")}</span>
                 </div>
                 <select
                   className="settings-select"
@@ -391,8 +390,8 @@ export function SettingsPanel({ open, onClose }: Props) {
                 <>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Model</span>
-                      <span className="settings-hint">OpenAI model used for summarization</span>
+                      <span>{t("settings.model")}</span>
+                      <span className="settings-hint">{t("settings.model.hint.openai")}</span>
                     </div>
                     <select
                       className="settings-select"
@@ -407,7 +406,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                   </div>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Base URL</span>
+                      <span>{t("settings.baseUrl")}</span>
                     </div>
                     <span className="settings-static">{BACKEND_BASE_URLS.openai}</span>
                   </div>
@@ -427,8 +426,8 @@ export function SettingsPanel({ open, onClose }: Props) {
                 <>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Model</span>
-                      <span className="settings-hint">DeepSeek model used for summarization</span>
+                      <span>{t("settings.model")}</span>
+                      <span className="settings-hint">{t("settings.model.hint.deepseek")}</span>
                     </div>
                     <select
                       className="settings-select"
@@ -443,7 +442,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                   </div>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Base URL</span>
+                      <span>{t("settings.baseUrl")}</span>
                     </div>
                     <span className="settings-static">{BACKEND_BASE_URLS.deepseek}</span>
                   </div>
@@ -463,8 +462,8 @@ export function SettingsPanel({ open, onClose }: Props) {
                 <>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Model</span>
-                      <span className="settings-hint">Qwen model used for summarization</span>
+                      <span>{t("settings.model")}</span>
+                      <span className="settings-hint">{t("settings.model.hint.qwen")}</span>
                     </div>
                     <select
                       className="settings-select"
@@ -479,7 +478,7 @@ export function SettingsPanel({ open, onClose }: Props) {
                   </div>
                   <div className="settings-row">
                     <div className="settings-label">
-                      <span>Base URL</span>
+                      <span>{t("settings.baseUrl")}</span>
                     </div>
                     <span className="settings-static">{BACKEND_BASE_URLS.qwen}</span>
                   </div>
@@ -494,23 +493,19 @@ export function SettingsPanel({ open, onClose }: Props) {
                 </>
               )}
 
-              {keyMissing && (
-                <div className="settings-warning">
-                  ⚠ No API key configured for the selected backend — summarization will not run.
-                </div>
-              )}
+              {keyMissing && <div className="settings-warning">{t("settings.warn.keyMissing")}</div>}
             </section>
 
             {error && <div className="settings-error">{error}</div>}
 
             <div className="settings-footer">
-              <button className="settings-cancel" onClick={onClose}>Cancel</button>
+              <button className="settings-cancel" onClick={onClose}>{t("settings.cancel")}</button>
               <button
                 className={`settings-save${saved ? " saved" : ""}`}
                 onClick={handleSave}
                 disabled={saving}
               >
-                {saved ? "Saved!" : saving ? "Saving…" : "Save"}
+                {saved ? t("settings.saved") : saving ? t("settings.saving") : t("settings.save")}
               </button>
             </div>
           </div>

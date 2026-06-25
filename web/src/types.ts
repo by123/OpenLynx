@@ -1,6 +1,9 @@
 export type Scope = "project" | "global";
 export type SearchMode = "keyword" | "semantic";
 
+/** Which lens the workspace is browsing through. */
+export type Lens = "memory" | "retrieval";
+
 export interface TagAttachment {
   name: string;
   kind: "user" | "project" | "module" | "custom" | string;
@@ -84,6 +87,11 @@ export interface TagInfo {
   count: number;
   created_at?: number;
 }
+
+/** What is currently open in the detail pane. */
+export type Selection =
+  | { kind: "memory"; turn: Turn }
+  | { kind: "retrieval"; item: RetrievalSummary };
 
 export interface AppSettings {
   summary_enabled: boolean;

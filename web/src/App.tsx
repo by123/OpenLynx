@@ -1,29 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "./api";
-import type { ScopesResponse, SearchMode, Scope, TagInfo, Turn } from "./types";
-import { TurnCard } from "./components/TurnCard";
-import { RetrievalsView } from "./components/RetrievalsView";
+import type { Lens, Scope, ScopesResponse, Selection, Turn } from "./types";
+import { MemoryGrid } from "./components/MemoryGrid";
+import { MemoryDetail } from "./components/MemoryDetail";
 import { SettingsPanel } from "./components/SettingsPanel";
-
-const PAGE_SIZE = 15;
-
-type View = "turns" | "retrievals";
+import { HelpModal } from "./components/HelpModal";
+import { useI18n } from "./i18n";
 
 export default function App() {
+  const { t, lang, setLang } = useI18n();
   const [scopes, setScopes] = useState<ScopesResponse | null>(null);
   const [scope, setScope] = useState<Scope>("global");
-  const [view, setView] = useState<View>("turns");
-  const [page, setPage] = useState(1);
-  const [query, setQuery] = useState("");
-  const [submittedQuery, setSubmittedQuery] = useState("");
-  const [mode, setMode] = useState<SearchMode>("keyword");
-  const [activeTag, setActiveTag] = useState<string | null>(null);
-  const [items, setItems] = useState<Turn[]>([]);
-  const [total, setTotal] = useState(0);
-  const [tags, setTags] = useState<TagInfo[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [lens, setLens] = useState<Lens>("memory");
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const stored = typeof localStorage !== "undefined" ? localStorage.getItem("cm-theme") : null;
     if (stored === "light" || stored === "dark") return stored;
@@ -50,15 +43,6 @@ export default function App() {
     });
   }, []);
 
-  const refreshTags = (s: Scope) => {
-    api.tags(s).then(setTags).catch(() => setTags([]));
-  };
-
-  useEffect(() => {
-    if (!scopes) return;
-    refreshTags(scope);
-  }, [scope, scopes]);
-
   const projectRoot = useMemo(() => {
     const dir = scopes?.project_dir?.replace(/[\\/]+$/, "");
     if (!dir) return "";
@@ -76,109 +60,19 @@ export default function App() {
     document.title = scope === "project" && projectName ? `Openlynx · ${projectName}` : "Openlynx";
   }, [projectName, scope]);
 
-  useEffect(() => {
-    if (view !== "turns") return;
-    if (!scopes) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api
-      .turns({
-        scope,
-        page,
-        pageSize: PAGE_SIZE,
-        q: submittedQuery || undefined,
-        tag: activeTag || undefined,
-        mode,
-      })
-      .then((r) => {
-        if (cancelled) return;
-        setItems(r.items);
-        setTotal(r.total);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(String(e));
-        setItems([]);
-        setTotal(0);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [scopes, scope, page, submittedQuery, activeTag, mode, view]);
-
-  const totalPages = useMemo(() => {
-    if (mode === "semantic") return 1;
-    return Math.max(1, Math.ceil(total / PAGE_SIZE));
-  }, [total, mode]);
-
-  const onSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setPage(1);
-    setSubmittedQuery(query.trim());
-  };
-
-  const onClear = () => {
-    setQuery("");
-    setSubmittedQuery("");
-    setActiveTag(null);
-    setPage(1);
-  };
-
-  const handleDelete = async (turn: Turn) => {
-    if (!confirm("Delete this turn permanently?")) return;
-    try {
-      await api.deleteTurn(scope, turn.id);
-      setItems((prev) => prev.filter((t) => t.id !== turn.id));
-      setTotal((n) => Math.max(0, n - 1));
-      refreshTags(scope);
-    } catch (e) {
-      alert(`Delete failed: ${e}`);
-    }
-  };
-
-  const handleAddTag = async (turn: Turn, name: string) => {
-    const clean = name.trim().replace(/^#/, "");
-    if (!clean) return;
-    try {
-      await api.addTag(scope, turn.id, clean, "custom");
-      setItems((prev) =>
-        prev.map((t) =>
-          t.id === turn.id && !t.tags.some((tag) => tag.name === clean)
-            ? {
-                ...t,
-                tags: [...t.tags, { name: clean, kind: "custom", source: "manual" }].sort(
-                  (a, b) => `${a.kind}:${a.name}`.localeCompare(`${b.kind}:${b.name}`),
-                ),
-              }
-            : t,
-        ),
-      );
-      refreshTags(scope);
-    } catch (e) {
-      alert(`Add tag failed: ${e}`);
-    }
-  };
-
-  const handleRemoveTag = async (turn: Turn, name: string) => {
-    try {
-      await api.removeTag(scope, turn.id, name);
-      setItems((prev) =>
-        prev.map((t) =>
-          t.id === turn.id ? { ...t, tags: t.tags.filter((x) => x.name !== name) } : t,
-        ),
-      );
-      refreshTags(scope);
-    } catch (e) {
-      alert(`Remove tag failed: ${e}`);
-    }
-  };
-
   const projectPath = projectRoot || "no project marker found";
   const globalPath = scopes?.global_dir ?? "";
+
+  const changeScope = (s: Scope) => {
+    setScope(s);
+    setSelection(null);
+  };
+  const changeLens = (l: Lens) => {
+    setLens(l);
+    setSelection(null);
+  };
+
+  const selectedId = selection ? (selection.kind === "memory" ? selection.turn.id : selection.item.id) : null;
 
   return (
     <div className="layout">
@@ -186,179 +80,135 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark" />
           <span className="brand-name">Openlynx</span>
+          <span className="brand-sub">{t("brand.sub")}</span>
         </div>
 
-        <div className="scope-switch" role="tablist" aria-label="scope">
+        <div className="view-switch" role="tablist" aria-label="view">
           <button
-            className={`scope-btn${scope === "project" ? " active" : ""}`}
-            disabled={!scopes?.project}
-            onClick={() => {
-              setScope("project");
-              setPage(1);
-            }}
-            data-tooltip={projectPath}
+            role="tab"
+            className={`view-pill${lens === "memory" ? " active" : ""}`}
+            onClick={() => changeLens("memory")}
+            title={t("view.memory.title")}
           >
-            <span className="scope-dot" /> {projectName || "Project"}
+            {t("view.memory")}
           </button>
           <button
-            className={`scope-btn${scope === "global" ? " active" : ""}`}
-            onClick={() => {
-              setScope("global");
-              setPage(1);
-            }}
-            data-tooltip={globalPath}
+            role="tab"
+            className={`view-pill${lens === "retrieval" ? " active" : ""}`}
+            onClick={() => changeLens("retrieval")}
+            title={t("view.retrieval.title")}
           >
-            <span className="scope-dot" /> Global
+            {t("view.retrieval")}
           </button>
         </div>
 
         <div className="topbar-right">
+          <div className="scope-group">
+            <span className="topbar-label">{t("scope.label")}</span>
+            <div className="scope-switch" role="tablist" aria-label={t("scope.label")}>
+              <button
+                className={`scope-btn${scope === "project" ? " active" : ""}`}
+                disabled={!scopes?.project}
+                onClick={() => changeScope("project")}
+                data-tooltip={projectPath}
+              >
+                <span className="scope-dot" /> {projectName || t("scope.project")}
+              </button>
+              <button
+                className={`scope-btn${scope === "global" ? " active" : ""}`}
+                onClick={() => changeScope("global")}
+                data-tooltip={globalPath}
+              >
+                <span className="scope-dot" /> {t("scope.all")}
+              </button>
+            </div>
+          </div>
+
+          <span className="topbar-divider" aria-hidden="true" />
+
+          <button
+            className="icon-btn lang-btn"
+            onClick={() => setLang(lang === "en" ? "zh" : "en")}
+            title={t("lang.title")}
+            aria-label={t("lang.title")}
+          >
+            {lang === "en" ? "EN" : "中"}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => setHelpOpen(true)}
+            title={t("action.help")}
+            aria-label={t("action.help.aria")}
+          >
+            ?
+          </button>
           <button
             className="icon-btn"
             onClick={() => setSettingsOpen(true)}
-            title="Settings"
-            aria-label="open settings"
+            title={t("action.settings")}
+            aria-label={t("action.settings.aria")}
           >
             ⚙
           </button>
           <button
             className="theme-toggle"
-            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-            title={theme === "dark" ? "switch to light mode" : "switch to dark mode"}
-            aria-label="toggle theme"
+            onClick={() => setTheme((th) => (th === "dark" ? "light" : "dark"))}
+            title={theme === "dark" ? t("theme.toLight") : t("theme.toDark")}
+            aria-label={t("theme.aria")}
           >
             {theme === "dark" ? "☀" : "☾"}
           </button>
         </div>
       </header>
+
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
 
-      <nav className="view-tabs" role="tablist" aria-label="view">
-        <button
-          role="tab"
-          className={view === "turns" ? "view-tab active" : "view-tab"}
-          onClick={() => setView("turns")}
-        >
-          Turns
+      <MemoryGrid
+        scope={scope}
+        lens={lens}
+        scopesReady={scopes !== null}
+        refreshKey={refreshKey}
+        selectedId={selectedId}
+        onSelect={setSelection}
+      />
+
+      {selection && (
+        <Drawer onClose={() => setSelection(null)}>
+          <MemoryDetail
+            selection={selection}
+            scope={scope}
+            onChanged={() => setRefreshKey((k) => k + 1)}
+            onDeleted={() => {
+              setSelection(null);
+              setRefreshKey((k) => k + 1);
+            }}
+            onOpenMemory={(turn: Turn) => setSelection({ kind: "memory", turn })}
+          />
+        </Drawer>
+      )}
+    </div>
+  );
+}
+
+function Drawer({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const { t } = useI18n();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="drawer-backdrop" onClick={onClose}>
+      <aside className="drawer" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <button className="drawer-close" onClick={onClose} aria-label={t("close")}>
+          ×
         </button>
-        <button
-          role="tab"
-          className={view === "retrievals" ? "view-tab active" : "view-tab"}
-          onClick={() => setView("retrievals")}
-          title="每次对话命中的历史记录"
-        >
-          Retrievals
-        </button>
-      </nav>
-
-      <div className="main">
-        {view === "turns" && (
-        <aside className="sidebar">
-          <form className="search" onSubmit={onSearch}>
-            <input
-              placeholder="Search…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-            <div className="mode">
-              <label className={mode === "keyword" ? "active" : ""}>
-                <input
-                  type="radio"
-                  checked={mode === "keyword"}
-                  onChange={() => setMode("keyword")}
-                />
-                keyword
-              </label>
-              <label className={mode === "semantic" ? "active" : ""}>
-                <input
-                  type="radio"
-                  checked={mode === "semantic"}
-                  onChange={() => setMode("semantic")}
-                />
-                semantic
-              </label>
-            </div>
-            <div className="search-actions">
-              <button type="submit">Search</button>
-              <button type="button" onClick={onClear}>
-                Clear
-              </button>
-            </div>
-          </form>
-
-          <div className="tags-block">
-            <div className="block-title">Tags</div>
-            {tags.length === 0 ? (
-              <div className="empty">no tags yet</div>
-            ) : (
-              <ul className="tag-list">
-                {tags.map((t) => (
-                  <li key={t.name}>
-                    <button
-                      className={activeTag === t.name ? "tag-pill active" : "tag-pill"}
-                      onClick={() => {
-                        setActiveTag((prev) => (prev === t.name ? null : t.name));
-                        setPage(1);
-                      }}
-                    >
-                      [{t.kind}] {t.name} <span className="count">{t.count}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </aside>
-        )}
-
-        {view === "retrievals" ? (
-          <RetrievalsView scope={scope} scopesReady={scopes !== null} />
-        ) : (
-            <section className="content">
-              <div className="status">
-                <span>
-                  {mode === "semantic" && submittedQuery
-                    ? `top ${items.length} semantic matches`
-                    : `${total} turn${total === 1 ? "" : "s"}`}
-                  {activeTag ? ` · #${activeTag}` : ""}
-                  {submittedQuery ? ` · "${submittedQuery}"` : ""}
-                </span>
-                {loading && <span className="loading">loading…</span>}
-              </div>
-
-              {error && <div className="error">{error}</div>}
-
-              <ul className="turns">
-                {items.map((t) => (
-                  <TurnCard
-                    key={t.id}
-                    turn={t}
-                    scope={scope}
-                    onDelete={() => handleDelete(t)}
-                    onAddTag={(name) => handleAddTag(t, name)}
-                    onRemoveTag={(name) => handleRemoveTag(t, name)}
-                  />
-                ))}
-              </ul>
-
-              {!loading && items.length === 0 && <div className="empty">no turns to show.</div>}
-
-              {mode === "keyword" && totalPages > 1 && (
-                <div className="pagination">
-                  <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                    ← prev
-                  </button>
-                  <span>
-                    {page} / {totalPages}
-                  </span>
-                  <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-                    next →
-                  </button>
-                </div>
-              )}
-            </section>
-          )}
-      </div>
+        {children}
+      </aside>
     </div>
   );
 }

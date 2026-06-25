@@ -185,6 +185,8 @@ def create_app() -> FastAPI:
         q: Optional[str] = None,
         tag: Optional[str] = None,
         mode: str = "keyword",
+        since: Optional[float] = None,
+        until: Optional[float] = None,
     ) -> dict:
         page = max(1, page)
         page_size = max(1, min(200, page_size))
@@ -208,11 +210,15 @@ def create_app() -> FastAPI:
                     for it in ordered:
                         it["score"] = score_by_id.get(it["id"])
                     items = ordered
+                if since is not None:
+                    items = [it for it in items if it.get("ts", 0) >= since]
+                if until is not None:
+                    items = [it for it in items if it.get("ts", 0) < until]
                 _attach_retrieval_counts(mem, items)
                 return {"items": items, "total": len(items), "mode": "semantic"}
             offset = (page - 1) * page_size
-            items = mem.list_turns(limit=page_size, offset=offset, query=q, tag=tag)
-            total = mem.count_turns(query=q, tag=tag)
+            items = mem.list_turns(limit=page_size, offset=offset, query=q, tag=tag, since=since, until=until)
+            total = mem.count_turns(query=q, tag=tag, since=since, until=until)
             _attach_retrieval_counts(mem, items)
             return {"items": items, "total": total, "mode": "keyword"}
 

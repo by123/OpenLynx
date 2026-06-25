@@ -34,6 +34,8 @@ export const api = {
     q?: string;
     tag?: string;
     mode?: SearchMode;
+    since?: number;
+    until?: number;
   }) => {
     const sp = new URLSearchParams();
     sp.set("scope", params.scope);
@@ -42,6 +44,8 @@ export const api = {
     if (params.q) sp.set("q", params.q);
     if (params.tag) sp.set("tag", params.tag);
     if (params.mode) sp.set("mode", params.mode);
+    if (params.since !== undefined) sp.set("since", String(params.since));
+    if (params.until !== undefined) sp.set("until", String(params.until));
     return jsonFetch<TurnsResponse>(`/api/turns?${sp}`);
   },
 
