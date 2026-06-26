@@ -107,6 +107,13 @@ class SettingsBody(BaseModel):
     embedding_backend: str = "voyage"
     openai_embedding_model: str = "text-embedding-3-large"
     voyage_model: str = "voyage-3.5"
+    # cloud sync (Turso)
+    sync_enabled: bool = False
+    turso_api_token: Optional[str] = None
+    turso_org: str = ""
+    turso_group: str = "default"
+    sync_url: str = ""
+    sync_token: Optional[str] = None
 
 
 def _try_open_with_command(cmd: list[str]) -> bool:
@@ -386,6 +393,15 @@ def create_app() -> FastAPI:
             "embedding_backend": embedding_backend,
             "openai_embedding_model": _get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
             "voyage_model": _get("VOYAGE_MODEL", "voyage-3.5"),
+            "sync_enabled": (_get("OPENLYNX_SYNC_ENABLED", "") or "").strip().lower()
+            in ("1", "true", "yes", "on"),
+            "turso_org": _get("TURSO_ORG", ""),
+            "turso_group": _get("TURSO_GROUP", "default"),
+            "sync_url": _get("OPENLYNX_SYNC_URL", ""),
+            "turso_api_token_set": _key_set("TURSO_API_TOKEN"),
+            "turso_api_token_value": _get_key("TURSO_API_TOKEN"),
+            "sync_token_set": _key_set("OPENLYNX_SYNC_TOKEN"),
+            "sync_token_value": _get_key("OPENLYNX_SYNC_TOKEN"),
         }
 
     @app.put("/api/settings")
@@ -434,12 +450,29 @@ def create_app() -> FastAPI:
             unset_key(str(env_file), legacy)
             os.environ.pop(legacy, None)
 
-        # API keys: only write when provided; empty string = clear the key
+        # cloud sync (Turso): enable flag + plain (non-secret) values
+        set_key(str(env_file), "OPENLYNX_SYNC_ENABLED", "1" if body.sync_enabled else "0")
+        os.environ["OPENLYNX_SYNC_ENABLED"] = "1" if body.sync_enabled else "0"
+        for env_key, value in [
+            ("TURSO_ORG", body.turso_org.strip()),
+            ("TURSO_GROUP", body.turso_group.strip() or "default"),
+            ("OPENLYNX_SYNC_URL", body.sync_url.strip()),
+        ]:
+            if value:
+                set_key(str(env_file), env_key, value)
+                os.environ[env_key] = value
+            else:
+                unset_key(str(env_file), env_key)
+                os.environ.pop(env_key, None)
+
+        # API keys + sync tokens: only write when provided; "" = clear the key
         for env_key, value in [
             ("OPENAI_API_KEY", body.openai_api_key),
             ("VOYAGE_API_KEY", body.voyage_api_key),
             ("DEEPSEEK_API_KEY", body.deepseek_api_key),
             ("QWEN_API_KEY", body.qwen_api_key),
+            ("TURSO_API_TOKEN", body.turso_api_token),
+            ("OPENLYNX_SYNC_TOKEN", body.sync_token),
         ]:
             if value is None:
                 continue  # field not sent — leave unchanged

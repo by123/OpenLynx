@@ -52,6 +52,13 @@ const VOYAGE_MODELS = [
   { value: "voyage-code-3",   label: "voyage-code-3  · optimized for code" },
 ];
 
+const NAV: { id: string; label: string }[] = [
+  { id: "embeddings", label: "settings.sec.embeddings" },
+  { id: "injection", label: "settings.sec.injection" },
+  { id: "summarization", label: "settings.sec.summarization" },
+  { id: "sync", label: "settings.sec.sync" },
+];
+
 const DEFAULT_SETTINGS: AppSettings = {
   summary_enabled: false,
   top_k: 5,
@@ -69,6 +76,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   embedding_backend: "voyage",
   openai_embedding_model: "text-embedding-3-large",
   voyage_model: "voyage-3.5",
+  sync_enabled: false,
+  turso_org: "",
+  turso_group: "default",
+  sync_url: "",
+  turso_api_token_set: false,
+  sync_token_set: false,
 };
 
 interface Props {
@@ -128,10 +141,13 @@ export function SettingsPanel({ open, onClose }: Props) {
   const [voyageKey, setVoyageKey] = useState<string | null>(null);
   const [deepseekKey, setDeepseekKey] = useState<string | null>(null);
   const [qwenKey, setQwenKey] = useState<string | null>(null);
+  const [tursoToken, setTursoToken] = useState<string | null>(null);
+  const [syncToken, setSyncToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [active, setActive] = useState<string>("embeddings");
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -143,6 +159,8 @@ export function SettingsPanel({ open, onClose }: Props) {
     setVoyageKey(null);
     setDeepseekKey(null);
     setQwenKey(null);
+    setTursoToken(null);
+    setSyncToken(null);
     api
       .getSettings()
       .then((s) => {
@@ -151,6 +169,8 @@ export function SettingsPanel({ open, onClose }: Props) {
         setVoyageKey(s.voyage_api_key_value ?? null);
         setDeepseekKey(s.deepseek_api_key_value ?? null);
         setQwenKey(s.qwen_api_key_value ?? null);
+        setTursoToken(s.turso_api_token_value || null);
+        setSyncToken(s.sync_token_value || null);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -176,6 +196,8 @@ export function SettingsPanel({ open, onClose }: Props) {
         voyage_api_key: voyageKey ?? undefined,
         deepseek_api_key: deepseekKey ?? undefined,
         qwen_api_key: qwenKey ?? undefined,
+        turso_api_token: tursoToken ?? undefined,
+        sync_token: syncToken ?? undefined,
       };
       await api.putSettings(payload);
       setSettings((s) => ({
@@ -184,6 +206,8 @@ export function SettingsPanel({ open, onClose }: Props) {
         voyage_api_key_set: voyageKey ? voyageKey.trim().length > 0 : s.voyage_api_key_set,
         deepseek_api_key_set: deepseekKey ? deepseekKey.trim().length > 0 : s.deepseek_api_key_set,
         qwen_api_key_set: qwenKey ? qwenKey.trim().length > 0 : s.qwen_api_key_set,
+        turso_api_token_set: tursoToken ? tursoToken.trim().length > 0 : s.turso_api_token_set,
+        sync_token_set: syncToken ? syncToken.trim().length > 0 : s.sync_token_set,
       }));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -217,9 +241,26 @@ export function SettingsPanel({ open, onClose }: Props) {
         {loading ? (
           <div className="settings-loading">{t("loading")}</div>
         ) : (
-          <div className="settings-body">
+          <>
+          <div className="settings-layout">
+            <nav className="settings-nav" aria-label={t("settings.title")}>
+              {NAV.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`settings-nav-item${active === item.id ? " active" : ""}`}
+                  onClick={() => setActive(item.id)}
+                  aria-current={active === item.id}
+                >
+                  {t(item.label)}
+                </button>
+              ))}
+            </nav>
+
+            <div className="settings-content">
 
             {/* ── Embeddings ── */}
+            {active === "embeddings" && (
             <section className="settings-section">
               <div className="settings-section-title">{t("settings.sec.embeddings")}</div>
 
@@ -298,8 +339,10 @@ export function SettingsPanel({ open, onClose }: Props) {
                 </>
               )}
             </section>
+            )}
 
             {/* ── Memory Injection ── */}
+            {active === "injection" && (
             <section className="settings-section">
               <div className="settings-section-title">{t("settings.sec.injection")}</div>
 
@@ -349,8 +392,10 @@ export function SettingsPanel({ open, onClose }: Props) {
                 </select>
               </div>
             </section>
+            )}
 
             {/* ── Summarization ── */}
+            {active === "summarization" && (
             <section className="settings-section">
               <div className="settings-section-title">{t("settings.sec.summarization")}</div>
 
@@ -495,20 +540,123 @@ export function SettingsPanel({ open, onClose }: Props) {
 
               {keyMissing && <div className="settings-warning">{t("settings.warn.keyMissing")}</div>}
             </section>
+            )}
+
+            {/* ── Cloud sync (Turso) ── */}
+            {active === "sync" && (
+            <section className="settings-section">
+              <div className="settings-section-title">{t("settings.sec.sync")}</div>
+
+              {/* Group A — sync the global store to an existing database */}
+              <div className="settings-subsection">
+                <div className="settings-subsection-title">{t("settings.sync.global.title")}</div>
+                <p className="settings-subsection-desc">{t("settings.sync.global.desc")}</p>
+
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>{t("settings.enableSync")}</span>
+                  </div>
+                  <button
+                    className={`settings-toggle${settings.sync_enabled ? " on" : ""}`}
+                    onClick={() => setSettings((s) => ({ ...s, sync_enabled: !s.sync_enabled }))}
+                    aria-pressed={settings.sync_enabled}
+                  >
+                    <span className="settings-toggle-knob" />
+                  </button>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>{t("settings.syncUrl")}</span>
+                    <span className="settings-hint">{t("settings.syncUrl.hint")}</span>
+                  </div>
+                  <input
+                    className="settings-input"
+                    type="text"
+                    value={settings.sync_url}
+                    onChange={(e) => setSettings((s) => ({ ...s, sync_url: e.target.value }))}
+                    placeholder="libsql://…turso.io"
+                    autoComplete="off"
+                  />
+                </div>
+
+                <KeyRow
+                  label="Global sync token"
+                  isSet={settings.sync_token_set}
+                  pendingKey={syncToken}
+                  onChange={setSyncToken}
+                  onClear={() => setSyncToken("")}
+                  placeholder="eyJhbGci…"
+                />
+
+                {settings.sync_enabled &&
+                  (!settings.sync_url.trim() || (!settings.sync_token_set && !syncToken?.trim())) && (
+                    <div className="settings-warning">{t("settings.warn.syncGlobal")}</div>
+                  )}
+              </div>
+
+              {/* Group B — credentials to auto-provision per-project databases */}
+              <div className="settings-subsection">
+                <div className="settings-subsection-title">{t("settings.sync.provision.title")}</div>
+                <p className="settings-subsection-desc">{t("settings.sync.provision.desc")}</p>
+
+                <KeyRow
+                  label="Turso API token"
+                  isSet={settings.turso_api_token_set}
+                  pendingKey={tursoToken}
+                  onChange={setTursoToken}
+                  onClear={() => setTursoToken("")}
+                  placeholder="eyJhbGci…"
+                />
+
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>{t("settings.tursoOrg")}</span>
+                    <span className="settings-hint">{t("settings.tursoOrg.hint")}</span>
+                  </div>
+                  <input
+                    className="settings-input"
+                    type="text"
+                    value={settings.turso_org}
+                    onChange={(e) => setSettings((s) => ({ ...s, turso_org: e.target.value }))}
+                    placeholder="my-org"
+                    autoComplete="off"
+                  />
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>{t("settings.tursoGroup")}</span>
+                    <span className="settings-hint">{t("settings.tursoGroup.hint")}</span>
+                  </div>
+                  <input
+                    className="settings-input"
+                    type="text"
+                    value={settings.turso_group}
+                    onChange={(e) => setSettings((s) => ({ ...s, turso_group: e.target.value }))}
+                    placeholder="default"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+            </section>
+            )}
 
             {error && <div className="settings-error">{error}</div>}
-
-            <div className="settings-footer">
-              <button className="settings-cancel" onClick={onClose}>{t("settings.cancel")}</button>
-              <button
-                className={`settings-save${saved ? " saved" : ""}`}
-                onClick={handleSave}
-                disabled={saving}
-              >
-                {saved ? t("settings.saved") : saving ? t("settings.saving") : t("settings.save")}
-              </button>
             </div>
           </div>
+
+          <div className="settings-footer">
+            <button className="settings-cancel" onClick={onClose}>{t("settings.cancel")}</button>
+            <button
+              className={`settings-save${saved ? " saved" : ""}`}
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saved ? t("settings.saved") : saving ? t("settings.saving") : t("settings.save")}
+            </button>
+          </div>
+          </>
         )}
       </div>
     </div>

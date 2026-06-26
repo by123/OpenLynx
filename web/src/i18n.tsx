@@ -171,6 +171,36 @@ const D: Record<string, Entry> = {
   "settings.key.configured": { en: "● configured", zh: "● 已配置" },
   "settings.key.notset": { en: "○ not set", zh: "○ 未设置" },
   "settings.key.remove": { en: "Remove key", zh: "移除密钥" },
+  "settings.sec.sync": { en: "Cloud sync (Turso)", zh: "云端同步 (Turso)" },
+  "settings.enableSync": { en: "Enable cloud sync", zh: "开启云端同步" },
+  "settings.enableSync.hint": {
+    en: "Sync the global store to its Turso replica. Project stores are configured per-project with `lynx-memory sync init`.",
+    zh: "将全局记忆库同步到 Turso 副本。项目记忆库需在各自目录下用 `lynx-memory sync init` 单独配置。",
+  },
+  "settings.tursoOrg": { en: "Turso organization", zh: "Turso 组织" },
+  "settings.tursoOrg.hint": { en: "Org slug used to provision per-project databases", zh: "用于为各项目创建数据库的组织标识" },
+  "settings.tursoGroup": { en: "Turso group", zh: "Turso 分组" },
+  "settings.tursoGroup.hint": { en: "Database group new project DBs are created in", zh: "新建项目数据库所属的分组" },
+  "settings.syncUrl": { en: "Global sync URL", zh: "全局同步地址" },
+  "settings.syncUrl.hint": { en: "libsql:// URL of the global store's Turso database", zh: "全局记忆库 Turso 数据库的 libsql:// 地址" },
+  "settings.warn.sync": {
+    en: "⚠ A Turso API token is needed to provision project databases via `sync init`.",
+    zh: "⚠ 通过 `sync init` 创建项目数据库需要配置 Turso API token。",
+  },
+  "settings.sync.global.title": { en: "Global store sync", zh: "全局库同步" },
+  "settings.sync.global.desc": {
+    en: "Sync the global store (~/.openlynx) to a Turso database you already created. Needs that database's URL and token.",
+    zh: "把全局记忆库（~/.openlynx）同步到一个你已建好的 Turso 数据库，需要填该库的地址和 token。",
+  },
+  "settings.sync.provision.title": { en: "Auto-provision project databases", zh: "自动创建项目库" },
+  "settings.sync.provision.desc": {
+    en: "Lets `lynx-memory sync init` create a Turso database for each project automatically. Only needed if you want project memory in the cloud too — the global sync above does not use these.",
+    zh: "让 `lynx-memory sync init` 自动为每个项目在 Turso 建库。仅当你也想把项目记忆上云时才需要——上面的全局同步用不到这些。",
+  },
+  "settings.warn.syncGlobal": {
+    en: "⚠ Enabling sync needs the sync URL and token below to be filled in.",
+    zh: "⚠ 开启同步后，需要填写下方的同步地址和 token 才会生效。",
+  },
 };
 
 export type TFunc = (key: string, vars?: Record<string, string | number>) => string;

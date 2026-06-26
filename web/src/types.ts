@@ -110,13 +110,24 @@ export interface AppSettings {
   embedding_backend: string;
   openai_embedding_model: string;
   voyage_model: string;
+  // cloud sync (Turso)
+  sync_enabled: boolean;
+  turso_org: string;
+  turso_group: string;
+  sync_url: string;
+  turso_api_token_set: boolean;
+  sync_token_set: boolean;
   // actual key values returned from server and sent on save
   openai_api_key_value?: string;
   voyage_api_key_value?: string;
   deepseek_api_key_value?: string;
   qwen_api_key_value?: string;
+  turso_api_token_value?: string;
+  sync_token_value?: string;
   openai_api_key?: string;
   voyage_api_key?: string;
   deepseek_api_key?: string;
   qwen_api_key?: string;
+  turso_api_token?: string;
+  sync_token?: string;
 }
