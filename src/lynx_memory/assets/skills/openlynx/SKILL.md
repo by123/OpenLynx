@@ -14,6 +14,7 @@ Use the installed slash commands or CLI:
 - `lynx-memory goal show` to view the active goal; `lynx-memory goal set "..."` to set one.
 - `lynx-memory merge --from global --to project --dry-run` to preview memory moves.
 - `lynx-memory delete --scope <project|global|both>` only after explicit user confirmation.
+- `lynx-memory sync status` to show cloud-sync config; `lynx-memory sync init` to sync the current store to a Turso database for cross-machine recall (creates a remote DB — confirm with the user first).
 
 A **goal** is an optional per-scope statement of what the user is working toward.
 When set, OpenLynx stores only turns an LLM judges relevant to the goal (strict by

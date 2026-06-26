@@ -29,6 +29,7 @@ Claude   : 结合你有蛋蛋（金色边牧）这个大运动量的伙伴，可
 - **Chroma** — 本地向量索引（turns + 摘要）。
 - **Voyage AI** (`voyage-3.5`) — 文本向量化服务。
 - **OpenAI**（默认 `gpt-4o-mini`）、**DeepSeek**（`deepseek-chat`）或 **Qwen**（`qwen-turbo`）— 每轮摘要与会话摘要，配置 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`QWEN_API_KEY` 任意一个即可。
+- **Turso / libSQL**（可选，默认关闭）— 开启[云端同步](#云端同步)后，SQLite 数据与向量会复制到你自己的远程数据库，实现跨电脑召回。
 
 ## 安装
 
@@ -103,6 +104,7 @@ Codex 的 `additionalContext` 字段会被完整尊重，记忆注入方式与 C
 | `lynx-memory doctor`       | 自检 Python、依赖、API key、`settings.json`。                                    |
 | `lynx-memory merge`        | 在项目级 / 全局两个仓库之间合并记忆（`--from` / `--to` 选 `project\|global`，可选 `--dry-run`）。 |
 | `lynx-memory retag`        | 给历史 turn 回填结构化自动标签（`--scope project\|global\|both`，可选 `--dry-run` / `--limit`）。 |
+| `lynx-memory sync`         | 通过 Turso 把记忆同步到云端（`init` / `init --all` / `status`）。详见 [云端同步](#云端同步)。 |
 | `lynx-memory delete`       | 永久删除某个 scope 的记忆（`--scope project\|global\|both`，默认带二次确认）。   |
 | `lynx-memory uninstall`    | 卸载 hooks、slash 命令与 skill 链接（保留数据）。                               |
 
@@ -200,7 +202,7 @@ lynx-memory daily --all --notify                   # 聚合全机所有库
 - 自动生成**类型化标签**，区分 `user` / `project` / `module` / `custom`。
 - 卡片以**摘要**为主，可一键"重新生成"。
 - 切换界面语言——**默认英文**，可在顶栏一键切到**中文**。
-- 点击右上角 **⚙ 设置图标** 打开**设置面板**，在浏览器里直接配置所有选项：API Key、摘要后端（OpenAI / DeepSeek / Qwen）、模型、Top-K、相似度阈值、召回范围——保存后自动写入 `~/.openlynx/.env`。
+- 点击右上角 **⚙ 设置图标** 打开**设置面板**——左侧菜单分为 **向量检索**、**记忆注入**、**摘要生成**、**云端同步 (Turso)** 四个分区。可配置 API Key、摘要后端（OpenAI / DeepSeek / Qwen）、模型、Top-K、相似度阈值、召回范围。**云端同步**分区把两种情况分开：**全局库同步**（开关 + 全局数据库的地址与 token）和**自动创建项目库**（Turso API token + 组织 / 分组，供 `sync init` 使用）。保存后自动写入 `~/.openlynx/.env`。
 
 ### 使用方式
 
@@ -271,6 +273,36 @@ lynx-memory init-project
 随时用 `/lynx-memory-status` 查看当前 scope，用 `/lynx-memory-pull-global` /
 `/lynx-memory-push-global` 在两层之间搬运历史。
 
+## 云端同步
+
+把记忆存到云端，在任意电脑上召回。OpenLynx 使用 [Turso](https://turso.tech)
+（libSQL）的**嵌入式副本**：读写命中本地的 SQLite 文件，变更在后台同步到远程
+数据库——本地优先，且无需你自己跑任何服务。
+
+每个项目有**独立**数据库，全局库也单独一个，历史互不混淆。项目的稳定身份从其
+**git remote** 派生，因此同一个仓库在两台电脑上会映射到同一个数据库；没有 remote
+的项目则回退到基于路径的 id。
+
+**配置步骤**——注册一个免费的 Turso 账号并创建 **API token**，然后把凭证填进
+`~/.openlynx/.env`，或在 Web UI **⚙ 设置 → 云端同步 (Turso)** 面板里填写
+（`TURSO_API_TOKEN`、`TURSO_ORG`、`TURSO_GROUP`）。之后创建并上传某个仓库：
+
+```bash
+cd ~/code/my-project
+lynx-memory sync init          # 当前项目：创建数据库并上传本地数据
+lynx-memory sync init --all    # 本机所有项目仓库
+lynx-memory sync status        # 查看已配置情况（全局 + 当前项目）
+```
+
+`sync init` 会写入 `<project>/.lynx-memory/sync.json`（自动加进 gitignore——里面
+含该项目数据库的 token）。换台电脑时，clone 仓库后再跑一次 `lynx-memory sync
+init`：基于 git remote 派生的 id 会把它绑定到同一个数据库，下次同步即把已有记忆拉
+下来。
+
+**全局**库则通过 `OPENLYNX_SYNC_*` 环境变量单独同步（同样可在设置面板里改，那里的
+**开启云端同步**开关对应 `OPENLYNX_SYNC_ENABLED`）。关系型数据和向量 embedding 都会
+同步，所以跨电脑也能直接做语义搜索，无需重新向量化。
+
 ## 配置
 
 全部可选，写在 `~/.openlynx/.env`：
@@ -292,8 +324,15 @@ lynx-memory init-project
 | `QWEN_MODEL`        | `qwen-turbo`                  | Qwen 摘要用的模型                 |
 | `QWEN_BASE_URL`     | DashScope 兼容模式地址        | Qwen/DashScope 端点覆盖           |
 | `LYNX_MEMORY_DIR`   | `~/.openlynx`                 | SQLite + Chroma 数据目录          |
+| `TURSO_API_TOKEN`   | —                             | Turso API token；`lynx-memory sync init` 用它创建各项目数据库 |
+| `TURSO_ORG`         | —                             | Turso 组织标识                    |
+| `TURSO_GROUP`       | `default`                     | 新建项目数据库所属的 Turso 分组   |
+| `OPENLYNX_SYNC_URL` | —                             | **全局**库 Turso 数据库的 libSQL 地址 |
+| `OPENLYNX_SYNC_TOKEN` | —                           | 全局库数据库的鉴权 token          |
+| `OPENLYNX_SYNC_ENABLED` | `0`                       | 设为 `1` 开启全局库同步           |
+| `OPENLYNX_SYNC_INTERVAL` | `60`                     | 后台副本同步的最小间隔（秒）      |
 
-「目标」与「每日日报」的专属环境变量见对应章节。
+「云端同步」「目标」与「每日日报」的专属环境变量见对应章节。
 
 ## 可选：MCP 服务
 
@@ -324,6 +363,8 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 - 所有数据保存在你本机的 `~/.openlynx/`。
 - 外部请求：**Voyage AI**（embedding，包含你的 prompt 文本）；**OpenAI**、**DeepSeek** 或 **Qwen** 用于每轮和会话级摘要（需配置 API Key，可通过 `.env` 或 Web UI ⚙ 设置面板配置）。
 - 不想让每轮内容被发去做摘要的话，设 `SUMMARY_ENABLED=0`。
+- **云端同步默认关闭。** 一旦开启，你的记忆（turn、摘要、标签和向量 embedding）会
+  上传到**你自己的** Turso 数据库；保持关闭即可让一切只留在本地。
 - 想加密静态数据的话，把 `LYNX_MEMORY_DIR` 指向一个加密卷即可。
 
 ## Roadmap
@@ -343,8 +384,12 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 - [ ] **统一多客户端安装器**
   未来提供 `lynx-memory install --client <name>` 一键写入 MCP 配置，并为支持的客户端附带强制召回的 rules 模板。
 
-- [ ] **记忆导入 / 导出与跨设备同步**
-  提供 `lynx-memory export` / `import` 命令，支持 JSONL 格式备份与恢复；配合 iCloud / Dropbox / Git 仓库放置 `db/` 目录，或内置 `lynx-memory sync` 子命令，实现多台设备记忆共享。
+- [x] **跨设备云端同步** — `lynx-memory sync init` 通过本地优先的嵌入式副本，把每个
+  仓库同步到各自的 Turso（libSQL）数据库，并以 git remote 为键，让同一个仓库在任意
+  电脑上都能召回同一份记忆。详见 [云端同步](#云端同步)。
+
+- [ ] **记忆导入 / 导出** — 提供 `lynx-memory export` / `import` 命令，支持 JSONL 格式
+  备份与恢复，独立于上面的云端同步。
 
 - [ ] **更强的自动打标签（精准 / 联想）**
   在现有规则式 `retag` 与类型化标签体系之上，增强对对话的自动打标能力；支持在 **精准模式**（紧贴字面、便于核对）与 **联想模式**（更宽关联、利于语义召回）之间切换。
@@ -356,6 +401,7 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 
 完整历史见 [GitHub Releases](https://github.com/by123/OpenLynx/releases)。
 
+- **0.6.0** — **云端同步**（基于 Turso / libSQL 嵌入式副本）：`lynx-memory sync init` 为每个项目创建独立数据库（以 git remote 为键，保证跨电脑稳定召回），`--all` 同步本机所有仓库，关系数据与向量 embedding 一并上传。Web UI ⚙ 设置面板重排为**左侧菜单**，其中 **云端同步 (Turso)** 分区把全局库同步与项目建库两种情况分开。
 - **0.5.0** — Web UI 重做：全宽卡片画廊 + 右侧详情抽屉，暖色主题；界面国际化（**默认英文**，一键切**中文**）；记忆列表支持**按日期筛选**（`/api/turns` 新增 `since` / `until`）。
 
 ## 协议

@@ -32,6 +32,7 @@ Storage:
 - **Chroma** — local vector index over turns + summaries.
 - **Voyage AI** (`voyage-3.5`) — embeddings.
 - **OpenAI** (`gpt-4o-mini`, default), **DeepSeek** (`deepseek-chat`), or **Qwen** (`qwen-turbo`) — per-turn and session summarization. Any one of `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `QWEN_API_KEY` is enough.
+- **Turso / libSQL** (optional, off by default) — when [cloud sync](#cloud-sync) is on, SQLite rows and vectors replicate to your own remote database for cross-machine recall.
 
 ## Install
 
@@ -107,6 +108,7 @@ because both write to the same SQLite + Chroma store at `~/.openlynx/`.
 | `lynx-memory daily`      | Summarize a project's turns for today, optionally push to your phone (`--notify`, `--all`, `--project`, `--since-hours`). |
 | `lynx-memory doctor`     | Verify Python, deps, API key, and `settings.json`.                                        |
 | `lynx-memory merge`      | Merge memory between the project and global stores (`--from` / `--to`, with `--dry-run`). |
+| `lynx-memory sync`       | Sync memory to the cloud via Turso (`init` / `init --all` / `status`). See [Cloud sync](#cloud-sync). |
 | `lynx-memory delete`     | Permanently delete memory for a scope (`--scope project\|global\|both`, double confirm).  |
 | `lynx-memory uninstall`  | Remove hooks, slash commands, and skill links (keeps your data).                          |
 
@@ -214,7 +216,7 @@ browser and lets you:
 - Tag turns (e.g. `#work`, `#personal`) and delete a single turn (also clears its embedding from Chroma).
 - See the per-turn **summary** as the card lead, with a one-click button to (re)generate it on demand.
 - Switch interface language — **English by default**, with a one-click **中文** toggle in the top bar.
-- Click the **⚙ gear icon** (top-right) to open the **Settings panel** and configure everything in-browser: API keys, summary backend (OpenAI / DeepSeek / Qwen), model, Top-K, min score, and retrieval scope — saved directly to `~/.openlynx/.env`.
+- Click the **⚙ gear icon** (top-right) to open the **Settings panel** — a left-hand menu with **Embeddings**, **Memory injection**, **Summarization**, and **Cloud sync (Turso)** sections. Configure API keys, summary backend (OpenAI / DeepSeek / Qwen), model, Top-K, min score, and retrieval scope. The **Cloud sync** section separates the two cases: **global store sync** (an enable toggle + the global database's URL & token) and **auto-provision project databases** (Turso API token + org/group, used by `sync init`). Everything saves directly to `~/.openlynx/.env`.
 
 ### Usage
 
@@ -261,6 +263,40 @@ Use `/lynx-memory-status` to inspect the active scope, and
 `/lynx-memory-pull-global` / `/lynx-memory-push-global` to move history between
 the two layers.
 
+## Cloud sync
+
+Keep your memory in the cloud and recall it from any machine. OpenLynx uses
+[Turso](https://turso.tech) (libSQL) **embedded replicas**: reads and writes hit
+a fast local SQLite file while changes sync to a remote database in the
+background — local-first, with no server of your own to run.
+
+Each project gets its **own** database and the global store gets one too, so
+histories never mix. A project's stable identity is derived from its **git
+remote**, so the same repo on two machines maps to the same database; projects
+without a remote fall back to a path-based id.
+
+**Setup** — create a free Turso account and an **API token**, then add your
+credentials either in `~/.openlynx/.env` or via the Web UI **⚙ Settings → Cloud
+sync (Turso)** panel (`TURSO_API_TOKEN`, `TURSO_ORG`, `TURSO_GROUP`). Then
+provision + upload a store:
+
+```bash
+cd ~/code/my-project
+lynx-memory sync init          # this project: create its DB + upload local data
+lynx-memory sync init --all    # every project store on the machine
+lynx-memory sync status        # show what's configured (global + current project)
+```
+
+`sync init` writes `<project>/.lynx-memory/sync.json` (auto-gitignored — it holds
+the per-project database token). On another machine, clone the repo and run
+`lynx-memory sync init` again: the git-remote-derived id binds it to the same
+database, and the next sync pulls your existing memory down.
+
+The **global** store syncs separately through the `OPENLYNX_SYNC_*` env vars
+(also editable in the Settings panel, where the **Enable cloud sync** toggle
+flips `OPENLYNX_SYNC_ENABLED`). Both relational rows and vector embeddings are
+synced, so semantic search works across machines without re-embedding.
+
 ## Configuration
 
 All optional, set in `~/.openlynx/.env`:
@@ -282,8 +318,15 @@ All optional, set in `~/.openlynx/.env`:
 | `QWEN_MODEL`      | `qwen-turbo`                  | Qwen model used for summarization                  |
 | `QWEN_BASE_URL`   | DashScope compatible-mode URL | Override for the Qwen/DashScope endpoint           |
 | `LYNX_MEMORY_DIR` | `~/.openlynx`                 | Where SQLite + Chroma live                         |
+| `TURSO_API_TOKEN` | —                             | Turso API token; provisions per-project DBs via `lynx-memory sync init` |
+| `TURSO_ORG`       | —                             | Turso organization slug                            |
+| `TURSO_GROUP`     | `default`                     | Turso database group new project DBs are created in |
+| `OPENLYNX_SYNC_URL` | —                           | libSQL URL of the **global** store's Turso database |
+| `OPENLYNX_SYNC_TOKEN` | —                         | Auth token for the global store's database         |
+| `OPENLYNX_SYNC_ENABLED` | `0`                     | Set `1` to sync the global store                   |
+| `OPENLYNX_SYNC_INTERVAL` | `60`                   | Min seconds between background replica syncs        |
 
-See [Goals](#goals) and [Daily digest](#daily-digest) for their own env vars.
+See [Cloud sync](#cloud-sync), [Goals](#goals) and [Daily digest](#daily-digest) for more on these env vars.
 
 ## Optional: MCP server
 
@@ -314,6 +357,9 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 - All data stays on your machine in `~/.openlynx/`.
 - Outbound calls: **Voyage AI** for embeddings (your prompt text); **OpenAI**, **DeepSeek**, or **Qwen** for per-turn and session summaries (requires an API key — set via `.env` or the Web UI ⚙ Settings panel).
 - Set `SUMMARY_ENABLED=0` if you don't want per-turn summaries to leave the box.
+- **Cloud sync is off by default.** When you enable it, your memory (turns,
+  summaries, tags, and vector embeddings) is uploaded to **your own** Turso
+  database. Leave it disabled to keep everything local-only.
 - Set `LYNX_MEMORY_DIR` to encrypt at rest with whatever filesystem-level encryption your OS provides.
 
 ## Roadmap
@@ -341,10 +387,13 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
   A future `lynx-memory install --client <name>` to write MCP configs in one
   shot, with rules templates for consistent recall across clients that support them.
 
-- [ ] **Import / export & cross-device sync**
-  `lynx-memory export` / `import` for JSONL backup and restore; place `db/` in
-  iCloud / Dropbox / a Git repo, or use a built-in `lynx-memory sync` subcommand
-  to share memory across machines.
+- [x] **Cross-device cloud sync** — `lynx-memory sync init` syncs each store to
+  its own Turso (libSQL) database via local-first embedded replicas, keyed off
+  the git remote so the same repo recalls the same memory on any machine. See
+  [Cloud sync](#cloud-sync).
+
+- [ ] **Import / export** — `lynx-memory export` / `import` for JSONL backup and
+  restore, independent of the cloud-sync path above.
 
 - [ ] **Richer automatic tagging (precise vs associative)**
   Stronger auto-labeling for turns, with a switchable **precise** mode (tight,
@@ -360,6 +409,7 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 
 Full history on [GitHub Releases](https://github.com/by123/OpenLynx/releases).
 
+- **0.6.0** — **Cloud sync** via Turso (libSQL) embedded replicas: `lynx-memory sync init` provisions a per-project database (keyed off the git remote for stable cross-machine recall), `--all` syncs every store, and both rows and vector embeddings are uploaded. The Web UI ⚙ Settings panel is reorganized into a **left-hand menu**, with a **Cloud sync (Turso)** section that splits global-store sync from project-database provisioning.
 - **0.5.0** — Redesigned web UI: full-width card gallery + side detail drawer, warm theme. Interface internationalized (**English by default**, one-click **中文**). Date filter on the memory list (`/api/turns` gains `since` / `until`).
 
 ## License
