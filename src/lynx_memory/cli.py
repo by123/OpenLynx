@@ -1636,6 +1636,17 @@ def main() -> None:
     )
     sp.set_defaults(func=cmd_daily)
 
+    sp = sub.add_parser("sync", help="Cloud-sync this project's memory to its own Turso DB")
+    from .sync import cmd_sync_init, cmd_sync_status
+
+    sp.set_defaults(func=cmd_sync_status)
+    ssub = sp.add_subparsers(dest="sync_action")
+    s_status = ssub.add_parser("status", help="Show sync config for global + current project")
+    s_status.set_defaults(func=cmd_sync_status)
+    s_init = ssub.add_parser("init", help="Provision a Turso DB for this project and migrate its memory")
+    s_init.add_argument("--force", action="store_true", help="Re-provision even if sync.json exists")
+    s_init.set_defaults(func=cmd_sync_init)
+
     args = p.parse_args()
     sys.exit(args.func(args))
 

@@ -199,6 +199,11 @@ class _MemoryBase:
         self.synced, init_schema = self._open_db()
         if init_schema:
             self.db.executescript(SCHEMA)
+            if self.synced:
+                # make the new schema visible in the local replica before
+                # migrations read it (writes go to the primary, reads are local)
+                self.db.commit()
+                self.db.sync()
         # migrations are cheap (a local user_version read) and only write on a
         # real upgrade, so run them every open — this lets a new migration (e.g.
         # v3 vector tables) reach an already-initialized synced replica.
