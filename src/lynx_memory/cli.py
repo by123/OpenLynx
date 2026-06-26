@@ -1645,6 +1645,7 @@ def main() -> None:
     s_status.set_defaults(func=cmd_sync_status)
     s_init = ssub.add_parser("init", help="Provision a Turso DB for this project and migrate its memory")
     s_init.add_argument("--force", action="store_true", help="Re-provision even if sync.json exists")
+    s_init.add_argument("--all", action="store_true", help="Sync every project store on the machine")
     s_init.set_defaults(func=cmd_sync_init)
 
     args = p.parse_args()

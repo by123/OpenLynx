@@ -110,20 +110,64 @@ def project_identity(root: Path) -> Tuple[str, str, Optional[str]]:
 
 # ──────────────────────────── migration ─────────────────────────────────────
 
+VECTOR_TABLES = ("turn_vectors", "summary_vectors")
+
+
 def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> dict:
-    """Copy a local store (sqlite rows + Chroma vectors) into its remote DB.
+    """Copy a local store (sqlite rows + vectors) into its remote DB.
 
     Idempotent: rows use INSERT OR IGNORE; vectors upsert by id. Returns a
     per-table count summary.
+
+    Source selection matters on a re-bind. Once a store has been synced, its
+    freshest state — post-sync writes AND (in sync mode) the vector tables —
+    lives in the embedded replica `sync-<db>`, not in `memory.db`/Chroma. So
+    when a replica is present we read from it, then wipe it, so the freshly
+    provisioned remote starts at a clean libSQL generation. Reusing a stale
+    replica file against a new remote makes `raw.sync()` fail with
+    "server returned a lower generation than local".
     """
     from .storage._base import SCHEMA, _apply_migrations
-    from .storage._libsql import LibsqlVectorCollection, connect_replica
+    from .storage._libsql import connect_replica
 
     db_path = paths_for(data_dir)["db_path"]
     chroma_dir = paths_for(data_dir)["chroma_dir"]
-    replica = str(db_path.with_name("sync-" + db_path.name))
+    replica = db_path.with_name("sync-" + db_path.name)
 
-    remote = connect_replica(replica, sync_url, sync_token, do_sync=True)
+    # 1. Read every table from the freshest local source into memory *before*
+    #    touching the replica file (it doubles as the new remote's replica path).
+    rebind = replica.exists()
+    source_db = replica if rebind else db_path
+    captured = []  # list of (table, cols, rows)
+    have_vector_rows = False
+    if source_db.exists():
+        local = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        tables = [
+            r[0]
+            for r in local.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' AND name != '_meta'"
+            )
+        ]
+        for t in tables:
+            cols = [r[1] for r in local.execute(f"PRAGMA table_info({t})")]
+            rows = [tuple(r) for r in local.execute(f"SELECT {','.join(cols)} FROM {t}").fetchall()]
+            captured.append((t, cols, rows))
+            if t in VECTOR_TABLES and rows:
+                have_vector_rows = True
+        local.close()
+
+    # 2. On a re-bind, drop the stale replica + libSQL sidecars so the new
+    #    remote starts a fresh generation. The local memory.db (and the old
+    #    remote it still points at) keep the data, so this is recoverable.
+    if rebind:
+        for suffix in ("", "-info", "-shm", "-wal", ".synced",
+                       "-client_wal_index", "-journal"):
+            f = replica.with_name(replica.name + suffix)
+            if f.exists():
+                f.unlink()
+
+    remote = connect_replica(str(replica), sync_url, sync_token, do_sync=True)
     remote.executescript(SCHEMA)
     remote.commit()
     remote.sync()  # make the new schema visible locally before migrations read it
@@ -154,53 +198,45 @@ def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> d
         remote.commit()
 
     summary: dict = {}
-    if db_path.exists():
-        local = sqlite3.connect(str(db_path))
-        local.row_factory = sqlite3.Row
-        tables = [
-            r[0]
-            for r in local.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'sqlite_%' AND name != '_meta'"
+    for t, cols, rows in captured:
+        # vector tables key on `id` → UPSERT; relational tables may have
+        # composite keys → plain INSERT OR IGNORE.
+        conflict = "UPSERT" if t in VECTOR_TABLES else "INSERT OR IGNORE"
+        insert_many(t, cols, rows, conflict=conflict)
+        summary[t] = remote.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+
+    # 3. First-time sync straight from memory.db: vectors aren't in the source
+    #    yet, so pull them from the local Chroma collections (no re-embedding).
+    if not have_vector_rows:
+        try:
+            import struct
+
+            import chromadb
+            from chromadb.config import Settings
+
+            cli = chromadb.PersistentClient(
+                path=str(chroma_dir), settings=Settings(anonymized_telemetry=False)
             )
-        ]
-        for t in tables:
-            cols = [r[1] for r in local.execute(f"PRAGMA table_info({t})")]
-            rows = [tuple(r) for r in local.execute(f"SELECT {','.join(cols)} FROM {t}").fetchall()]
-            insert_many(t, cols, rows)
-            summary[t] = remote.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        local.close()
+            for name, table in (("turns", "turn_vectors"), ("summaries", "summary_vectors")):
+                try:
+                    src = cli.get_collection(name)
+                except Exception:
+                    continue
+                got = src.get(include=["embeddings"])
+                ids = got.get("ids")
+                embs = got.get("embeddings")
+                ids = [] if ids is None else list(ids)
+                embs = [] if embs is None else list(embs)
+                rows = []
+                for i, vec in zip(ids, embs):
+                    vals = [float(x) for x in vec]
+                    rows.append((i, len(vals), struct.pack(f"<{len(vals)}f", *vals)))
+                insert_many(table, ["id", "dim", "vec"], rows, conflict="UPSERT")
+                summary[table] = remote.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except Exception as e:
+            summary["vectors_error"] = str(e)
 
-    # copy vectors from the local Chroma collections (no re-embedding), batched
-    try:
-        import struct
-
-        import chromadb
-        from chromadb.config import Settings
-
-        cli = chromadb.PersistentClient(
-            path=str(chroma_dir), settings=Settings(anonymized_telemetry=False)
-        )
-        for name, table in (("turns", "turn_vectors"), ("summaries", "summary_vectors")):
-            try:
-                src = cli.get_collection(name)
-            except Exception:
-                continue
-            got = src.get(include=["embeddings"])
-            ids = got.get("ids")
-            embs = got.get("embeddings")
-            ids = [] if ids is None else list(ids)
-            embs = [] if embs is None else list(embs)
-            rows = []
-            for i, vec in zip(ids, embs):
-                vals = [float(x) for x in vec]
-                rows.append((i, len(vals), struct.pack(f"<{len(vals)}f", *vals)))
-            insert_many(table, ["id", "dim", "vec"], rows, conflict="UPSERT")
-            summary[table] = remote.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        remote.sync()
-    except Exception as e:
-        summary["vectors_error"] = str(e)
-
+    remote.sync()  # push everything we just wrote up to the remote
     remote.close()
     return summary
 
