@@ -226,6 +226,43 @@ class _MemoryBase:
                 "summaries", embedding_function=None, metadata={"hnsw:space": "cosine"}
             )
 
+    def _resolve_sync(self) -> "tuple[str, str, bool]":
+        """Resolve this store's sync config as (url, token, enabled).
+
+        A project store reads `<data_dir>/sync.json` (its own Turso DB, written
+        by `lynx-memory sync init`); the GLOBAL store falls back to the
+        OPENLYNX_SYNC_* env vars. Per-store config avoids the env-var collision
+        that would happen if project and global shared OPENLYNX_SYNC_URL in one
+        process (e.g. the web server). Unconfigured stores get ("", "", False).
+        """
+        import json
+
+        cfg = self.data_dir / "sync.json"
+        if cfg.exists():
+            try:
+                d = json.loads(cfg.read_text())
+                return (
+                    str(d.get("url", "")).strip(),
+                    str(d.get("token", "")).strip(),
+                    bool(d.get("enabled", True)),
+                )
+            except Exception:
+                logger.exception("invalid sync.json at %s", cfg)
+                return "", "", False
+
+        try:
+            is_global = self.data_dir.resolve() == GLOBAL_DATA_DIR.resolve()
+        except Exception:
+            is_global = self.data_dir == GLOBAL_DATA_DIR
+        if is_global:
+            return (
+                os.environ.get("OPENLYNX_SYNC_URL", "").strip(),
+                os.environ.get("OPENLYNX_SYNC_TOKEN", "").strip(),
+                os.environ.get("OPENLYNX_SYNC_ENABLED", "").strip().lower()
+                in ("1", "true", "yes", "on"),
+            )
+        return "", "", False
+
     def _open_db(self) -> "tuple[bool, bool]":
         """Open self.db. Returns (synced, init_schema).
 
@@ -234,10 +271,11 @@ class _MemoryBase:
         sqlite; for a replica only on first creation, so periodic opens skip the
         network write-through of `CREATE TABLE IF NOT EXISTS`).
 
-        Sync mode requires OPENLYNX_SYNC_ENABLED=1 + URL + token, and applies
-        only to the GLOBAL store. Anything else falls back to local sqlite3, so
-        the feature is opt-in and never disturbs project stores or local data
-        until explicitly enabled.
+        Each store resolves its own sync config (see _resolve_sync): the GLOBAL
+        store from OPENLYNX_SYNC_* env vars, a project store from its own
+        `<data_dir>/sync.json` (so it syncs to its own Turso DB without colliding
+        with the global env vars). Unconfigured stores stay on local sqlite3, so
+        the feature is fully opt-in per store.
 
         To keep the latency-sensitive read path (on_prompt) fast, a remote pull
         happens at most once per OPENLYNX_SYNC_INTERVAL seconds (default 60),
@@ -245,17 +283,9 @@ class _MemoryBase:
         """
         import time
 
-        sync_url = os.environ.get("OPENLYNX_SYNC_URL", "").strip()
-        sync_token = os.environ.get("OPENLYNX_SYNC_TOKEN", "").strip()
-        enabled = os.environ.get("OPENLYNX_SYNC_ENABLED", "").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
-        try:
-            is_global = self.data_dir.resolve() == GLOBAL_DATA_DIR.resolve()
-        except Exception:
-            is_global = self.data_dir == GLOBAL_DATA_DIR
+        sync_url, sync_token, enabled = self._resolve_sync()
 
-        if enabled and is_global and sync_url and sync_token:
+        if enabled and sync_url and sync_token:
             try:
                 from ._libsql import connect_replica
 
