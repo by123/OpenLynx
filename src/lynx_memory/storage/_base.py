@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import List, Optional
@@ -93,6 +94,16 @@ CREATE TABLE IF NOT EXISTS goals (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS turn_vectors (
+    id TEXT PRIMARY KEY,
+    dim INTEGER,
+    vec BLOB
+);
+CREATE TABLE IF NOT EXISTS summary_vectors (
+    id TEXT PRIMARY KEY,
+    dim INTEGER,
+    vec BLOB
+);
 """
 
 
@@ -100,7 +111,7 @@ CREATE TABLE IF NOT EXISTS goals (
 # migration. Fresh DBs jump straight to TARGET after SCHEMA runs (SCHEMA
 # already includes every column); pre-existing DBs get patched by the
 # corresponding migration step.
-TARGET_SCHEMA_VERSION = 2
+TARGET_SCHEMA_VERSION = 3
 
 
 def _migrate_to_v1(db: sqlite3.Connection) -> None:
@@ -146,9 +157,22 @@ def _migrate_to_v2(db: sqlite3.Connection) -> None:
     )
 
 
-# Map version -> migration function. To add a v3: write _migrate_to_v3,
+def _migrate_to_v3(db) -> None:
+    """Add vector tables for libSQL-synced semantic search (one source of
+    truth that travels with the DB). Harmless/unused for local Chroma stores."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS turn_vectors ("
+        "id TEXT PRIMARY KEY, dim INTEGER, vec BLOB)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS summary_vectors ("
+        "id TEXT PRIMARY KEY, dim INTEGER, vec BLOB)"
+    )
+
+
+# Map version -> migration function. To add a v4: write _migrate_to_v4,
 # add entry here, bump TARGET_SCHEMA_VERSION.
-_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2}
+_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2, 3: _migrate_to_v3}
 
 
 def _apply_migrations(db: sqlite3.Connection) -> None:
@@ -172,22 +196,97 @@ class _MemoryBase:
         self.db_path = paths["db_path"]
         self.chroma_dir = paths["chroma_dir"]
 
-        self.db = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.db.executescript(SCHEMA)
+        self.synced, init_schema = self._open_db()
+        if init_schema:
+            self.db.executescript(SCHEMA)
+        # migrations are cheap (a local user_version read) and only write on a
+        # real upgrade, so run them every open — this lets a new migration (e.g.
+        # v3 vector tables) reach an already-initialized synced replica.
         _apply_migrations(self.db)
         self.db.commit()
+        if self.synced and init_schema:
+            self.db.sync()
 
-        self.chroma = chromadb.PersistentClient(
-            path=str(self.chroma_dir),
-            settings=Settings(anonymized_telemetry=False),
+        if self.synced:
+            # vectors live in Turso (sync) — brute-force cosine, no Chroma.
+            from ._libsql import LibsqlVectorCollection
+
+            self.chroma = None
+            self.turns = LibsqlVectorCollection(self.db, "turn")
+            self.summaries = LibsqlVectorCollection(self.db, "summary")
+        else:
+            self.chroma = chromadb.PersistentClient(
+                path=str(self.chroma_dir),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            self.turns = self.chroma.get_or_create_collection(
+                "turns", embedding_function=None, metadata={"hnsw:space": "cosine"}
+            )
+            self.summaries = self.chroma.get_or_create_collection(
+                "summaries", embedding_function=None, metadata={"hnsw:space": "cosine"}
+            )
+
+    def _open_db(self) -> "tuple[bool, bool]":
+        """Open self.db. Returns (synced, init_schema).
+
+        `synced` is True when self.db is a libSQL embedded replica. `init_schema`
+        is True when the caller should run SCHEMA + migrations (always for local
+        sqlite; for a replica only on first creation, so periodic opens skip the
+        network write-through of `CREATE TABLE IF NOT EXISTS`).
+
+        Sync mode requires OPENLYNX_SYNC_ENABLED=1 + URL + token, and applies
+        only to the GLOBAL store. Anything else falls back to local sqlite3, so
+        the feature is opt-in and never disturbs project stores or local data
+        until explicitly enabled.
+
+        To keep the latency-sensitive read path (on_prompt) fast, a remote pull
+        happens at most once per OPENLYNX_SYNC_INTERVAL seconds (default 60),
+        tracked by a sentinel file's mtime; other opens read the local replica.
+        """
+        import time
+
+        sync_url = os.environ.get("OPENLYNX_SYNC_URL", "").strip()
+        sync_token = os.environ.get("OPENLYNX_SYNC_TOKEN", "").strip()
+        enabled = os.environ.get("OPENLYNX_SYNC_ENABLED", "").strip().lower() in (
+            "1", "true", "yes", "on",
         )
-        self.turns = self.chroma.get_or_create_collection(
-            "turns", embedding_function=None, metadata={"hnsw:space": "cosine"}
-        )
-        self.summaries = self.chroma.get_or_create_collection(
-            "summaries", embedding_function=None, metadata={"hnsw:space": "cosine"}
-        )
+        try:
+            is_global = self.data_dir.resolve() == GLOBAL_DATA_DIR.resolve()
+        except Exception:
+            is_global = self.data_dir == GLOBAL_DATA_DIR
+
+        if enabled and is_global and sync_url and sync_token:
+            try:
+                from ._libsql import connect_replica
+
+                replica = self.db_path.with_name("sync-" + self.db_path.name)
+                sentinel = replica.with_name(replica.name + ".synced")
+                first_time = not replica.exists()
+                try:
+                    interval = float(os.environ.get("OPENLYNX_SYNC_INTERVAL", "60") or 60)
+                except ValueError:
+                    interval = 60.0
+                stale = (not sentinel.exists()) or (time.time() - sentinel.stat().st_mtime >= interval)
+                do_sync = first_time or stale
+
+                self.db = connect_replica(str(replica), sync_url, sync_token, do_sync=do_sync)
+                if do_sync:
+                    sentinel.touch()
+                return True, first_time
+            except Exception:
+                logger.exception("libSQL sync connect failed; falling back to local sqlite")
+
+        self.db = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        return False, True
+
+    def sync(self) -> None:
+        """Pull/push the synced replica (no-op for a local sqlite store)."""
+        if self.synced:
+            try:
+                self.db.sync()
+            except Exception:
+                logger.exception("libSQL sync failed")
 
     def close(self) -> None:
         self.db.close()

@@ -2,7 +2,7 @@
 import json
 import os
 
-from .config import paths_for, resolve_data_dir
+from .config import load_env, paths_for, resolve_data_dir
 from .storage import Memory
 
 
@@ -355,6 +355,7 @@ def persist_last_turn(
         return ""
 
     data_dir = resolve_data_dir(cwd)
+    load_env(data_dir)  # ensure sync config + API keys are present in this hook process
     state_path = paths_for(data_dir)["state_path"]
 
     # Fast path: if state file already records this assistant uuid as
