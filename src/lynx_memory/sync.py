@@ -131,6 +131,28 @@ def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> d
     remote.commit()
     remote.sync()
 
+    def insert_many(table: str, cols: list, rows: list, conflict: str = "INSERT OR IGNORE") -> None:
+        """Multi-row INSERT in chunks — one network round-trip per chunk
+        instead of per row (the whole point: avoid N synchronous writes)."""
+        if not rows:
+            return
+        cl = ",".join(cols)
+        tup = "(" + ",".join(["?"] * len(cols)) + ")"
+        per = max(1, 800 // max(1, len(cols)))  # stay well under SQLite's var limit
+        tail = (
+            " ON CONFLICT(id) DO UPDATE SET "
+            + ",".join(f"{c}=excluded.{c}" for c in cols if c != "id")
+            if conflict == "UPSERT"
+            else ""
+        )
+        verb = "INSERT" if conflict == "UPSERT" else conflict
+        for i in range(0, len(rows), per):
+            chunk = rows[i : i + per]
+            sql = f"{verb} INTO {table}({cl}) VALUES " + ",".join([tup] * len(chunk)) + tail
+            params = [v for row in chunk for v in row]
+            remote.execute(sql, params)
+        remote.commit()
+
     summary: dict = {}
     if db_path.exists():
         local = sqlite3.connect(str(db_path))
@@ -144,23 +166,22 @@ def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> d
         ]
         for t in tables:
             cols = [r[1] for r in local.execute(f"PRAGMA table_info({t})")]
-            cl = ",".join(cols)
-            ph = ",".join(["?"] * len(cols))
-            for row in local.execute(f"SELECT {cl} FROM {t}").fetchall():
-                remote.execute(f"INSERT OR IGNORE INTO {t}({cl}) VALUES ({ph})", tuple(row))
-            remote.commit()
+            rows = [tuple(r) for r in local.execute(f"SELECT {','.join(cols)} FROM {t}").fetchall()]
+            insert_many(t, cols, rows)
             summary[t] = remote.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         local.close()
 
-    # copy vectors from the local Chroma collections (no re-embedding)
+    # copy vectors from the local Chroma collections (no re-embedding), batched
     try:
+        import struct
+
         import chromadb
         from chromadb.config import Settings
 
         cli = chromadb.PersistentClient(
             path=str(chroma_dir), settings=Settings(anonymized_telemetry=False)
         )
-        for name, kind in (("turns", "turn"), ("summaries", "summary")):
+        for name, table in (("turns", "turn_vectors"), ("summaries", "summary_vectors")):
             try:
                 src = cli.get_collection(name)
             except Exception:
@@ -170,13 +191,13 @@ def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> d
             embs = got.get("embeddings")
             ids = [] if ids is None else list(ids)
             embs = [] if embs is None else list(embs)
-            if ids:
-                LibsqlVectorCollection(remote, kind).add(ids, embs)
+            rows = []
+            for i, vec in zip(ids, embs):
+                vals = [float(x) for x in vec]
+                rows.append((i, len(vals), struct.pack(f"<{len(vals)}f", *vals)))
+            insert_many(table, ["id", "dim", "vec"], rows, conflict="UPSERT")
+            summary[table] = remote.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         remote.sync()
-        summary["turn_vectors"] = remote.execute("SELECT COUNT(*) FROM turn_vectors").fetchone()[0]
-        summary["summary_vectors"] = remote.execute(
-            "SELECT COUNT(*) FROM summary_vectors"
-        ).fetchone()[0]
     except Exception as e:
         summary["vectors_error"] = str(e)
 
@@ -199,14 +220,30 @@ def _write_sync_json(data_dir: Path, payload: dict) -> Path:
     return cfg
 
 
-def cmd_sync_init(args: argparse.Namespace) -> int:
-    data_dir = find_project_root(os.getcwd())
-    if data_dir is None:
-        print("Not inside a project store. Run `lynx-memory init-project` here first.")
-        return 1
-    root = data_dir.parent  # the actual repo root (for the git remote)
-    load_env(data_dir)
+def sync_store(data_dir: Path, *, api_token: str, org: str, group: str, force: bool = False) -> dict:
+    """Provision a Turso DB for one project store, migrate it, write sync.json.
 
+    Returns a result dict; sets "skipped" when already configured (no --force).
+    """
+    root = data_dir.parent  # the actual repo root (for the git remote)
+    cfg = data_dir / "sync.json"
+    if cfg.exists() and not force:
+        return {"project": root.name, "skipped": "already configured"}
+
+    pid, db_name, remote = project_identity(root)
+    sync_url, db_token = provision_db(db_name, token=api_token, org=org, group=group)
+    summary = migrate_local_to_remote(data_dir, sync_url, db_token)
+    _write_sync_json(
+        data_dir,
+        {"url": sync_url, "token": db_token, "project_id": pid, "remote": remote, "enabled": True},
+    )
+    return {"project": root.name, "db": db_name, "remote": remote, "summary": summary}
+
+
+def cmd_sync_init(args: argparse.Namespace) -> int:
+    from .config import GLOBAL_DATA_DIR
+
+    load_env(GLOBAL_DATA_DIR)  # TURSO_* live in the global .env
     api_token = os.environ.get("TURSO_API_TOKEN", "").strip()
     org = os.environ.get("TURSO_ORG", "").strip()
     group = os.environ.get("TURSO_GROUP", "default").strip() or "default"
@@ -214,28 +251,39 @@ def cmd_sync_init(args: argparse.Namespace) -> int:
         print("Missing TURSO_API_TOKEN / TURSO_ORG in ~/.openlynx/.env.")
         return 1
 
-    pid, db_name, remote = project_identity(root)
-    print(f"project: {root.name}  remote: {remote or '(none)'}")
-    print(f"project_id: {pid}  db: {db_name}")
+    if getattr(args, "all", False):
+        from .daily import discover_stores
 
-    cfg = data_dir / "sync.json"
-    if cfg.exists() and not getattr(args, "force", False):
-        print(f"{cfg} already exists. Use --force to re-provision.")
+        stores = [d for d in discover_stores() if d.resolve() != GLOBAL_DATA_DIR.resolve()]
+        print(f"discovered {len(stores)} project store(s):")
+        for d in stores:
+            print("  -", d.parent)
+        synced = 0
+        for d in stores:
+            try:
+                res = sync_store(d, api_token=api_token, org=org, group=group, force=args.force)
+                if res.get("skipped"):
+                    print(f"• {res['project']}: skip ({res['skipped']})")
+                else:
+                    n = res.get("summary", {}).get("turns", "?")
+                    print(f"✓ {res['project']} → {res['db']}  ({n} turns)")
+                    synced += 1
+            except Exception as e:
+                print(f"✗ {d.parent.name}: {type(e).__name__}: {e}")
+        print(f"done: {synced} newly synced, {len(stores)} total")
+        return 0
+
+    data_dir = find_project_root(os.getcwd())
+    if data_dir is None:
+        print("Not inside a project store. Run `init-project` here first, or use --all.")
         return 1
-
-    print("provisioning Turso database…")
-    sync_url, db_token = provision_db(db_name, token=api_token, org=org, group=group)
-    print(f"  url: {sync_url}")
-
-    print("migrating local store → remote…")
-    summary = migrate_local_to_remote(data_dir, sync_url, db_token)
-    print("  " + ", ".join(f"{k}={v}" for k, v in summary.items()))
-
-    _write_sync_json(
-        data_dir,
-        {"url": sync_url, "token": db_token, "project_id": pid, "remote": remote, "enabled": True},
-    )
-    print(f"wrote {cfg} (gitignored). This project now syncs to its own Turso DB.")
+    if (data_dir / "sync.json").exists() and not args.force:
+        print(f"{data_dir / 'sync.json'} already exists. Use --force to re-provision.")
+        return 1
+    print(f"provisioning + migrating {data_dir.parent.name}…")
+    res = sync_store(data_dir, api_token=api_token, org=org, group=group, force=args.force)
+    print(f"✓ {res['project']} → {res.get('db')}: " + ", ".join(f"{k}={v}" for k, v in res.get("summary", {}).items()))
+    print("wrote sync.json (gitignored).")
     return 0
 
 
