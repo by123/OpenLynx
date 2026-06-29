@@ -65,7 +65,9 @@ class _TagsMixin:
         tag = self._clean_tag_name(tag)
         if not tag:
             return False
-        row = self.db.execute("SELECT id FROM turns WHERE id = ?", (turn_id,)).fetchone()
+        row = self.db.execute(
+            "SELECT id FROM turns WHERE id = ? AND deleted_at IS NULL", (turn_id,)
+        ).fetchone()
         if row is None:
             return False
         self.db.execute(

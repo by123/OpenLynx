@@ -42,14 +42,16 @@ CREATE TABLE IF NOT EXISTS turns (
     summary TEXT,
     summary_source TEXT,
     summary_model TEXT,
-    summary_ts REAL
+    summary_ts REAL,
+    deleted_at REAL
 );
 CREATE TABLE IF NOT EXISTS summaries (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     ts REAL NOT NULL,
     summary TEXT NOT NULL,
-    turn_count INTEGER DEFAULT 0
+    turn_count INTEGER DEFAULT 0,
+    deleted_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
 CREATE INDEX IF NOT EXISTS idx_turns_ts ON turns(ts);
@@ -111,7 +113,7 @@ CREATE TABLE IF NOT EXISTS summary_vectors (
 # migration. Fresh DBs jump straight to TARGET after SCHEMA runs (SCHEMA
 # already includes every column); pre-existing DBs get patched by the
 # corresponding migration step.
-TARGET_SCHEMA_VERSION = 3
+TARGET_SCHEMA_VERSION = 4
 
 
 def _migrate_to_v1(db: sqlite3.Connection) -> None:
@@ -170,9 +172,26 @@ def _migrate_to_v3(db) -> None:
     )
 
 
-# Map version -> migration function. To add a v4: write _migrate_to_v4,
+def _migrate_to_v4(db) -> None:
+    """Add `deleted_at` for soft-delete (NULL = live, a timestamp = hidden).
+
+    Soft-deletes are plain UPDATEs, so on a synced store they ride the libSQL
+    embedded-replica write path and propagate to the remote Turso primary just
+    like any other write — no separate push step. The row (and its tags /
+    retrieval-hit links) is kept; only the vector is dropped so it stops
+    surfacing in semantic search. Every read path filters `deleted_at IS NULL`.
+    """
+    for table in ("turns", "summaries"):
+        cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+        if "deleted_at" not in cols:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN deleted_at REAL")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_turns_deleted ON turns(deleted_at)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_summaries_deleted ON summaries(deleted_at)")
+
+
+# Map version -> migration function. To add a v5: write _migrate_to_v5,
 # add entry here, bump TARGET_SCHEMA_VERSION.
-_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2, 3: _migrate_to_v3}
+_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2, 3: _migrate_to_v3, 4: _migrate_to_v4}
 
 
 def _apply_migrations(db: sqlite3.Connection) -> None:

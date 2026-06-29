@@ -43,7 +43,7 @@ def collect_turns(data_dir: Path, since_hours: Optional[float]) -> Tuple[List[di
     try:
         rows = m.db.execute(
             "SELECT ts, user_msg, assistant_msg, summary FROM turns "
-            "WHERE ts >= ? ORDER BY ts",
+            "WHERE ts >= ? AND deleted_at IS NULL ORDER BY ts",
             (cutoff,),
         ).fetchall()
         turns = [dict(r) for r in rows]

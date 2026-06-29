@@ -51,7 +51,11 @@ def _sqlite_turn_count(data_dir: Path) -> int:
     try:
         con = sqlite3.connect(str(db_path), timeout=5.0)
         try:
-            row = con.execute("SELECT COUNT(*) FROM turns").fetchone()
+            # `deleted_at` is absent on stores predating the soft-delete column
+            # (e.g. a frozen pre-sync memory.db); count everything there.
+            cols = {r[1] for r in con.execute("PRAGMA table_info(turns)")}
+            where = " WHERE deleted_at IS NULL" if "deleted_at" in cols else ""
+            row = con.execute(f"SELECT COUNT(*) FROM turns{where}").fetchone()
             return int(row[0]) if row else 0
         finally:
             con.close()
@@ -276,7 +280,7 @@ def create_app() -> FastAPI:
                     rows = mem.db.execute(
                         f"SELECT id, session_id, ts, cwd, user_msg, assistant_msg, "
                         f"summary, summary_source, summary_model, summary_ts "
-                        f"FROM turns WHERE id IN ({placeholders})",
+                        f"FROM turns WHERE id IN ({placeholders}) AND deleted_at IS NULL",
                         ids,
                     ).fetchall()
                     by_id = {r["id"]: dict(r) for r in rows}

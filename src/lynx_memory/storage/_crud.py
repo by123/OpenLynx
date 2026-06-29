@@ -61,7 +61,8 @@ class _CrudMixin:
         cwd: Optional[str] = None,
     ) -> tuple:
         row = self.db.execute(
-            "SELECT id, assistant_msg FROM turns WHERE session_id = ? AND user_uuid = ?",
+            "SELECT id, assistant_msg, deleted_at FROM turns "
+            "WHERE session_id = ? AND user_uuid = ?",
             (session_id, user_uuid),
         ).fetchone()
         ts = time.time()
@@ -77,10 +78,13 @@ class _CrudMixin:
             action = "insert"
         else:
             turn_id = row["id"]
-            if row["assistant_msg"] == assistant_msg:
+            if row["assistant_msg"] == assistant_msg and row["deleted_at"] is None:
                 return turn_id, "skip"
+            # Re-ingesting revives a previously soft-deleted turn (deleted_at=NULL)
+            # and re-indexes it below, so it reappears in search/listings.
             self.db.execute(
-                "UPDATE turns SET assistant_msg = ?, ts = ?, user_msg = ?, cwd = ? WHERE id = ?",
+                "UPDATE turns SET assistant_msg = ?, ts = ?, user_msg = ?, cwd = ?, "
+                "deleted_at = NULL WHERE id = ?",
                 (assistant_msg, ts, user_msg, cwd, turn_id),
             )
             self.db.commit()
@@ -101,7 +105,7 @@ class _CrudMixin:
     def get_turn(self, turn_id: str) -> Optional[Dict[str, Any]]:
         row = self.db.execute(
             "SELECT id, session_id, ts, cwd, user_msg, assistant_msg, summary, summary_source, "
-            "summary_model, summary_ts FROM turns WHERE id = ?",
+            "summary_model, summary_ts FROM turns WHERE id = ? AND deleted_at IS NULL",
             (turn_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -113,7 +117,7 @@ class _CrudMixin:
         rows = self.db.execute(
             f"SELECT id, session_id, ts, cwd, user_msg, assistant_msg, "
             f"summary, summary_source, summary_model, summary_ts "
-            f"FROM turns WHERE id IN ({placeholders})",
+            f"FROM turns WHERE id IN ({placeholders}) AND deleted_at IS NULL",
             turn_ids,
         ).fetchall()
         return {r["id"]: dict(r) for r in rows}
@@ -122,7 +126,7 @@ class _CrudMixin:
         rows = self.db.execute(
             "SELECT id, session_id, ts, user_msg, assistant_msg, summary, summary_source, "
             "summary_model, summary_ts "
-            "FROM turns ORDER BY ts DESC LIMIT ?",
+            "FROM turns WHERE deleted_at IS NULL ORDER BY ts DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -142,7 +146,7 @@ class _CrudMixin:
             "FROM turns t"
         )
         params: list = []
-        wheres: list = []
+        wheres: list = ["t.deleted_at IS NULL"]
         if tag:
             sql += " JOIN turn_tags tt ON tt.turn_id = t.id"
             wheres.append("tt.tag_name = ?")
@@ -173,7 +177,7 @@ class _CrudMixin:
     ) -> int:
         sql = "SELECT COUNT(*) FROM turns t"
         params: list = []
-        wheres: list = []
+        wheres: list = ["t.deleted_at IS NULL"]
         if tag:
             sql += " JOIN turn_tags tt ON tt.turn_id = t.id"
             wheres.append("tt.tag_name = ?")
@@ -194,13 +198,14 @@ class _CrudMixin:
 
     def get_session_turns(self, session_id: str) -> List[Dict[str, Any]]:
         rows = self.db.execute(
-            "SELECT id, ts, user_msg, assistant_msg FROM turns WHERE session_id = ? ORDER BY ts",
+            "SELECT id, ts, user_msg, assistant_msg FROM turns "
+            "WHERE session_id = ? AND deleted_at IS NULL ORDER BY ts",
             (session_id,),
         ).fetchall()
         return [dict(r) for r in rows]
 
     def iter_turns_for_retag(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        sql = "SELECT id, cwd, user_msg, assistant_msg FROM turns ORDER BY ts DESC"
+        sql = "SELECT id, cwd, user_msg, assistant_msg FROM turns WHERE deleted_at IS NULL ORDER BY ts DESC"
         params: list = []
         if limit is not None:
             sql += " LIMIT ?"
@@ -225,22 +230,19 @@ class _CrudMixin:
         return cur.rowcount > 0
 
     def forget_turn(self, turn_id: str) -> bool:
-        """Delete a single turn + its tags + retrieval-hit links + chroma vec."""
-        affected_tags = [
-            r["tag_name"]
-            for r in self.db.execute(
-                "SELECT tag_name FROM turn_tags WHERE turn_id = ?", (turn_id,)
-            ).fetchall()
-        ]
-        self.db.execute("DELETE FROM turn_tags WHERE turn_id = ?", (turn_id,))
-        self.db.execute("DELETE FROM retrieval_hits WHERE turn_id = ?", (turn_id,))
-        cur = self.db.execute("DELETE FROM turns WHERE id = ?", (turn_id,))
-        for tag in affected_tags:
-            left = self.db.execute(
-                "SELECT 1 FROM turn_tags WHERE tag_name = ? LIMIT 1", (tag,)
-            ).fetchone()
-            if left is None:
-                self.db.execute("DELETE FROM tags WHERE name = ?", (tag,))
+        """Soft-delete a single turn: stamp `deleted_at` and drop its vector.
+
+        The row, its tags and its retrieval-hit links are all kept (the data
+        stays — it's just hidden from every read path, which filters
+        `deleted_at IS NULL`). Only the vector is removed so the turn stops
+        surfacing in semantic search. The UPDATE is an ordinary write, so on a
+        synced store it propagates to the remote Turso primary through the
+        libSQL embedded replica — no separate push step.
+        """
+        cur = self.db.execute(
+            "UPDATE turns SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (time.time(), turn_id),
+        )
         self.db.commit()
         if cur.rowcount == 0:
             return False
@@ -274,7 +276,7 @@ class _CrudMixin:
             """
             SELECT s.id
               FROM sessions s
-              LEFT JOIN summaries m ON m.session_id = s.id
+              LEFT JOIN summaries m ON m.session_id = s.id AND m.deleted_at IS NULL
              WHERE m.id IS NULL
                AND (? IS NULL OR s.id != ?)
              ORDER BY s.started_at DESC
@@ -285,14 +287,20 @@ class _CrudMixin:
         for r in rows:
             sid = r["id"]
             n = self.db.execute(
-                "SELECT COUNT(*) AS c FROM turns WHERE session_id = ?", (sid,)
+                "SELECT COUNT(*) AS c FROM turns WHERE session_id = ? AND deleted_at IS NULL",
+                (sid,),
             ).fetchone()["c"]
             if n >= min_turns:
                 return sid
         return None
 
     def forget_summary(self, summary_id: str) -> bool:
-        cur = self.db.execute("DELETE FROM summaries WHERE id = ?", (summary_id,))
+        """Soft-delete a summary (see `forget_turn`): stamp `deleted_at`, keep
+        the row, drop its vector. Propagates to the remote like any write."""
+        cur = self.db.execute(
+            "UPDATE summaries SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (time.time(), summary_id),
+        )
         self.db.commit()
         if cur.rowcount == 0:
             return False
@@ -346,8 +354,12 @@ class _CrudMixin:
     # ---------- stats (admin) ----------
     def stats(self) -> Dict[str, int]:
         n_sessions = self.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-        n_turns = self.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-        n_sum = self.db.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
+        n_turns = self.db.execute(
+            "SELECT COUNT(*) FROM turns WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        n_sum = self.db.execute(
+            "SELECT COUNT(*) FROM summaries WHERE deleted_at IS NULL"
+        ).fetchone()[0]
         return {
             "sessions": n_sessions,
             "turns": n_turns,

@@ -98,6 +98,7 @@ class _RetrievalsMixin:
             "t.summary, t.summary_source, t.summary_model, t.summary_ts, "
             "COUNT(h.retrieval_id) AS retrieval_count "
             "FROM turns t JOIN retrieval_hits h ON h.turn_id = t.id "
+            "WHERE t.deleted_at IS NULL "
             "GROUP BY t.id "
             "ORDER BY retrieval_count DESC, t.ts DESC "
             "LIMIT ?",
