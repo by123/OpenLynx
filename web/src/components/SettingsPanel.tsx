@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AppSettings } from "../types";
+import type { AppSettings, ScopeInfo } from "../types";
 import { useI18n } from "../i18n";
 
 const OPENAI_MODELS = [
@@ -53,6 +53,7 @@ const VOYAGE_MODELS = [
 ];
 
 const NAV: { id: string; label: string }[] = [
+  { id: "projects", label: "settings.sec.projects" },
   { id: "embeddings", label: "settings.sec.embeddings" },
   { id: "injection", label: "settings.sec.injection" },
   { id: "summarization", label: "settings.sec.summarization" },
@@ -87,6 +88,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** Called after a rescan or visibility change so the tab bar can refresh. */
+  onProjectsChanged?: () => void;
 }
 
 function KeyRow({
@@ -134,9 +137,11 @@ function KeyRow({
   );
 }
 
-export function SettingsPanel({ open, onClose }: Props) {
+export function SettingsPanel({ open, onClose, onProjectsChanged }: Props) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [projectScopes, setProjectScopes] = useState<ScopeInfo[]>([]);
+  const [scanning, setScanning] = useState(false);
   const [openaiKey, setOpenaiKey] = useState<string | null>(null);
   const [voyageKey, setVoyageKey] = useState<string | null>(null);
   const [deepseekKey, setDeepseekKey] = useState<string | null>(null);
@@ -174,7 +179,33 @@ export function SettingsPanel({ open, onClose }: Props) {
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+    api.scopes().then((s) => setProjectScopes(s.scopes)).catch(() => setProjectScopes([]));
   }, [open]);
+
+  const handleRescan = async () => {
+    setScanning(true);
+    setError(null);
+    try {
+      const s = await api.rescanProjects();
+      setProjectScopes(s.scopes);
+      onProjectsChanged?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const toggleProjectHidden = async (id: string, hidden: boolean) => {
+    setProjectScopes((list) => list.map((p) => (p.id === id ? { ...p, hidden } : p)));
+    try {
+      await api.setProjectHidden(id, hidden);
+      onProjectsChanged?.();
+    } catch (e) {
+      setError(String(e));
+      setProjectScopes((list) => list.map((p) => (p.id === id ? { ...p, hidden: !hidden } : p)));
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -258,6 +289,61 @@ export function SettingsPanel({ open, onClose }: Props) {
             </nav>
 
             <div className="settings-content">
+
+            {/* ── Memory directories ── */}
+            {active === "projects" && (
+            <section className="settings-section">
+              <div className="settings-section-title">{t("settings.sec.projects")}</div>
+              <p className="settings-subsection-desc">{t("settings.projects.desc")}</p>
+
+              <div className="settings-projects-toolbar">
+                <span className="settings-hint">
+                  {t("settings.projects.found", {
+                    n: projectScopes.filter((p) => p.kind === "project").length,
+                  })}
+                </span>
+                <button type="button" className="ghost-btn" onClick={handleRescan} disabled={scanning}>
+                  {scanning ? t("settings.projects.scanning") : t("settings.projects.rescan")}
+                </button>
+              </div>
+
+              {projectScopes.filter((p) => p.kind === "project").length === 0 ? (
+                <div className="settings-project-empty">{t("settings.projects.empty")}</div>
+              ) : (
+                <div className="settings-project-list">
+                  {projectScopes
+                    .filter((p) => p.kind === "project")
+                    .map((p) => (
+                      <div className={`settings-project-row${p.hidden ? " is-hidden" : ""}`} key={p.id}>
+                        <div className="settings-project-meta">
+                          <span className="settings-project-name">
+                            {p.name}
+                            {p.is_current && (
+                              <span className="settings-project-current">{t("settings.projects.current")}</span>
+                            )}
+                          </span>
+                          <span className="settings-project-path" title={p.root ?? p.dir}>
+                            {p.root ?? p.dir}
+                          </span>
+                        </div>
+                        <span className="settings-project-count">
+                          {t("settings.projects.turns", { n: p.turn_count })}
+                        </span>
+                        <button
+                          type="button"
+                          className={`settings-toggle${!p.hidden ? " on" : ""}`}
+                          onClick={() => toggleProjectHidden(p.id, !p.hidden)}
+                          aria-pressed={!p.hidden}
+                          title={p.hidden ? t("settings.projects.show") : t("settings.projects.hide")}
+                        >
+                          <span className="settings-toggle-knob" />
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </section>
+            )}
 
             {/* ── Embeddings ── */}
             {active === "embeddings" && (

@@ -38,30 +38,37 @@ export default function App() {
   useEffect(() => {
     api.scopes().then((s) => {
       setScopes(s);
-      if (s.project && s.project_turn_count > 0) setScope("project");
-      else setScope("global");
+      // Default to the cwd's project when it has memories, else the global store.
+      const cur = s.scopes.find((x) => x.id === s.current_id);
+      setScope(cur && cur.kind === "project" && cur.turn_count > 0 ? cur.id : "global");
     });
   }, []);
 
-  const projectRoot = useMemo(() => {
-    const dir = scopes?.project_dir?.replace(/[\\/]+$/, "");
-    if (!dir) return "";
-    return dir.endsWith(`${dir.includes("\\") ? "\\" : "/"}.lynx-memory`)
-      ? dir.replace(/[\\/]\.lynx-memory$/, "")
-      : dir;
-  }, [scopes?.project_dir]);
+  // Re-fetch the tab list after the Settings panel rescans or toggles visibility,
+  // keeping the current selection if it's still visible.
+  const reloadScopes = () => {
+    api.scopes().then((s) => {
+      setScopes(s);
+      setScope((cur) => {
+        const visible = s.scopes.filter((x) => !x.hidden);
+        if (visible.some((x) => x.id === cur)) return cur;
+        if (visible.some((x) => x.id === s.current_id)) return s.current_id;
+        return "global";
+      });
+    });
+  };
 
-  const projectName = useMemo(() => {
-    if (!projectRoot) return "";
-    return projectRoot.split(/[\\/]/).pop() ?? "";
-  }, [projectRoot]);
+  const visibleScopes = useMemo(() => scopes?.scopes.filter((s) => !s.hidden) ?? [], [scopes]);
+  const activeScope = useMemo(
+    () => scopes?.scopes.find((s) => s.id === scope) ?? null,
+    [scopes, scope],
+  );
+  const globalPath = scopes?.global_dir ?? "";
 
   useEffect(() => {
-    document.title = scope === "project" && projectName ? `Openlynx · ${projectName}` : "Openlynx";
-  }, [projectName, scope]);
-
-  const projectPath = projectRoot || "no project marker found";
-  const globalPath = scopes?.global_dir ?? "";
+    document.title =
+      activeScope && activeScope.kind === "project" ? `Openlynx · ${activeScope.name}` : "Openlynx";
+  }, [activeScope]);
 
   const changeScope = (s: Scope) => {
     setScope(s);
@@ -103,29 +110,6 @@ export default function App() {
         </div>
 
         <div className="topbar-right">
-          <div className="scope-group">
-            <span className="topbar-label">{t("scope.label")}</span>
-            <div className="scope-switch" role="tablist" aria-label={t("scope.label")}>
-              <button
-                className={`scope-btn${scope === "project" ? " active" : ""}`}
-                disabled={!scopes?.project}
-                onClick={() => changeScope("project")}
-                data-tooltip={projectPath}
-              >
-                <span className="scope-dot" /> {projectName || t("scope.project")}
-              </button>
-              <button
-                className={`scope-btn${scope === "global" ? " active" : ""}`}
-                onClick={() => changeScope("global")}
-                data-tooltip={globalPath}
-              >
-                <span className="scope-dot" /> {t("scope.all")}
-              </button>
-            </div>
-          </div>
-
-          <span className="topbar-divider" aria-hidden="true" />
-
           <button
             className="icon-btn lang-btn"
             onClick={() => setLang(lang === "en" ? "zh" : "en")}
@@ -161,7 +145,33 @@ export default function App() {
         </div>
       </header>
 
-      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <div className="scope-bar">
+        <span className="topbar-label">{t("scope.label")}</span>
+        <div className="scope-switch scope-tabs" role="tablist" aria-label={t("scope.label")}>
+          {visibleScopes.map((s) => (
+            <button
+              key={s.id}
+              role="tab"
+              aria-selected={scope === s.id}
+              className={`scope-btn${scope === s.id ? " active" : ""}${
+                s.is_current && s.kind === "project" ? " current" : ""
+              }`}
+              onClick={() => changeScope(s.id)}
+              title={s.kind === "global" ? globalPath : s.root ?? s.dir}
+            >
+              <span className="scope-dot" />
+              <span className="scope-name">{s.kind === "global" ? t("scope.all") : s.name}</span>
+              <span className="scope-count">{s.turn_count}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onProjectsChanged={reloadScopes}
+      />
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
 
       <MemoryGrid

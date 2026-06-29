@@ -27,6 +27,15 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
 export const api = {
   scopes: () => jsonFetch<ScopesResponse>("/api/scopes"),
 
+  rescanProjects: () => jsonFetch<ScopesResponse>("/api/projects/rescan", { method: "POST" }),
+
+  setProjectHidden: (id: string, hidden: boolean) =>
+    jsonFetch<{ ok: true }>(`/api/projects/${id}/visibility`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
+    }),
+
   turns: (params: {
     scope: Scope;
     page?: number;
@@ -51,6 +60,13 @@ export const api = {
 
   deleteTurn: (scope: Scope, id: string) =>
     jsonFetch<{ ok: true }>(`/api/turns/${scope}/${id}`, { method: "DELETE" }),
+
+  bulkDeleteTurns: (scope: Scope, ids: string[]) =>
+    jsonFetch<{ ok: true; deleted: number }>(`/api/turns/${scope}/bulk-delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
 
   addTag: (scope: Scope, id: string, name: string, kind = "custom") =>
     jsonFetch<{ ok: true }>(`/api/turns/${scope}/${id}/tags`, {

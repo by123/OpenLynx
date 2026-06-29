@@ -1,50 +1,55 @@
 /* ============================================================
-   Openlynx web UI  —  warm, quiet reading theme
+   Openlynx web UI  —  quiet reading (low eye-strain)
    ------------------------------------------------------------
-   One accent (terracotta), warm neutrals, hairline borders.
-   Radius scale: panels 12 · cards 10 · controls 8 · chips 6 · pills full.
-   No glow, no gradients, no scanlines. Light + dark, system fonts.
+   Tuned for long reading sessions: dimmed (never glaring-white)
+   backgrounds, soft dark-grey ink instead of pure black, low
+   saturation so nothing vibrates, one calm dusty-blue accent.
+   Light  : warm greige paper, gentle contrast.
+   Dark   : dim reading — soft charcoal, soft grey text (no pure
+            black bg, no pure white text → no nighttime halation).
+   One accent (dusty blue), hairline borders, near-invisible grain.
+   Radius: panels 12 · cards 10 · controls 8 · chips 6.
    ============================================================ */
 
 :root,
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --bg: #f5f1ec;
-  --surface: #fffdfa;
-  --surface-2: #f0eae1;
-  --surface-3: #e7ded2;
-  --border: #e7ded3;
-  --border-strong: #d8ccbc;
+  --bg: #ecebe6;            /* warm greige, dimmed off glaring white */
+  --surface: #f5f3ee;       /* soft sheet, still not pure white */
+  --surface-2: #e4e1da;
+  --surface-3: #d7d3ca;
+  --border: #ded9ce;
+  --border-strong: #c7c1b4;
 
-  --text: #2a241f;
-  --text-soft: #4f463d;
-  --muted: #877a6b;
-  --muted-2: #ab9e8e;
+  --text: #41403b;          /* soft warm dark-grey ink, not black */
+  --text-soft: #5e5b54;
+  --muted: #807c72;
+  --muted-2: #a6a193;
 
-  --accent: #bf5a3a;
-  --accent-strong: #a8472b;   /* button bg / link hover — white-readable */
-  --accent-soft: rgba(191, 90, 58, 0.10);
-  --accent-border: rgba(191, 90, 58, 0.32);
-  --on-accent: #fffaf6;
+  --accent: #4f6f8a;        /* calm, low-saturation dusty blue */
+  --accent-strong: #456079; /* button bg / link hover — white-readable */
+  --accent-soft: rgba(79, 111, 138, 0.10);
+  --accent-border: rgba(79, 111, 138, 0.30);
+  --on-accent: #f6f8fa;
 
-  --danger: #bb2d3b;
-  --danger-soft: rgba(187, 45, 59, 0.09);
+  --danger: #a85650;        /* muted brick, not a jarring red */
+  --danger-soft: rgba(168, 86, 80, 0.10);
 
-  --user-tint: #bf5a3a;
-  --asst-tint: #877a6b;
+  --user-tint: #4f6f8a;
+  --asst-tint: #807c72;
 
-  --code-bg: #f2ece2;
-  --code-fg: #3a332b;
-  --inline-code-bg: rgba(40, 28, 18, 0.06);
-  --inline-code-border: #e4dacd;
+  --code-bg: #eae7df;
+  --code-fg: #403f3a;
+  --inline-code-bg: rgba(40, 38, 30, 0.05);
+  --inline-code-border: #ddd9cd;
 
-  --summary-tint: #bf5a3a;
-  --summary-bg: rgba(191, 90, 58, 0.06);
-  --summary-border: rgba(191, 90, 58, 0.22);
+  --summary-tint: #4f6f8a;
+  --summary-bg: rgba(79, 111, 138, 0.06);
+  --summary-border: rgba(79, 111, 138, 0.20);
 
-  --shadow-sm: 0 1px 2px rgba(60, 40, 24, 0.06);
-  --shadow-md: 0 12px 34px rgba(60, 40, 24, 0.14);
+  --shadow-sm: 0 1px 2px rgba(50, 48, 40, 0.05);
+  --shadow-md: 0 12px 30px rgba(50, 48, 40, 0.12);
 
   --radius-lg: 12px;
   --radius: 10px;
@@ -59,41 +64,41 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #1b1714;
-  --surface: #251f1a;
-  --surface-2: #2e2721;
-  --surface-3: #393029;
-  --border: #342d26;
-  --border-strong: #473d34;
+  --bg: #1f2328;            /* soft charcoal, lifted off black to kill halation */
+  --surface: #272c31;
+  --surface-2: #2f343a;
+  --surface-3: #3a4046;
+  --border: #343a40;
+  --border-strong: #454c53;
 
-  --text: #f1e9df;
-  --text-soft: #d6cabc;
-  --muted: #a89a89;
-  --muted-2: #71655a;
+  --text: #c8cdd1;          /* soft grey, not pure white → gentle at night */
+  --text-soft: #a3a9ae;
+  --muted: #7e858b;
+  --muted-2: #5c6268;
 
-  --accent: #e08a5f;
-  --accent-strong: #e08a5f;
-  --accent-soft: rgba(224, 138, 95, 0.14);
-  --accent-border: rgba(224, 138, 95, 0.36);
-  --on-accent: #2a1810;
+  --accent: #7fa3c2;        /* soft dusty blue, calm not neon */
+  --accent-strong: #7fa3c2;
+  --accent-soft: rgba(127, 163, 194, 0.15);
+  --accent-border: rgba(127, 163, 194, 0.32);
+  --on-accent: #15202b;
 
-  --danger: #ef7382;
-  --danger-soft: rgba(239, 115, 130, 0.14);
+  --danger: #e08b8b;
+  --danger-soft: rgba(224, 139, 139, 0.14);
 
-  --user-tint: #e08a5f;
-  --asst-tint: #a89a89;
+  --user-tint: #7fa3c2;
+  --asst-tint: #7e858b;
 
-  --code-bg: #181410;
-  --code-fg: #ddd2c4;
-  --inline-code-bg: rgba(255, 248, 240, 0.07);
-  --inline-code-border: rgba(255, 248, 240, 0.09);
+  --code-bg: #1a1e22;
+  --code-fg: #c3c8cc;
+  --inline-code-bg: rgba(200, 205, 209, 0.07);
+  --inline-code-border: rgba(200, 205, 209, 0.10);
 
-  --summary-tint: #e08a5f;
-  --summary-bg: rgba(224, 138, 95, 0.08);
-  --summary-border: rgba(224, 138, 95, 0.24);
+  --summary-tint: #7fa3c2;
+  --summary-bg: rgba(127, 163, 194, 0.09);
+  --summary-border: rgba(127, 163, 194, 0.22);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.34);
-  --shadow-md: 0 16px 42px rgba(0, 0, 0, 0.54);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 14px 38px rgba(0, 0, 0, 0.48);
 }
 
 * { box-sizing: border-box; }
@@ -110,6 +115,29 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Aged-paper / film grain: one fixed, non-interactive layer over the
+   whole UI (sits below modals). Sells the "notebook / archive / old
+   photo" texture without touching layout or text crispness. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  opacity: 0.02;          /* barely-there: warmth without noise over dense text */
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+:root[data-theme="dark"] body::after {
+  opacity: 0.03;
+  mix-blend-mode: screen;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  body::after { display: none; }
 }
 
 button { font-family: inherit; }
@@ -255,6 +283,62 @@ a:focus-visible {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ---------- Multi-project tabs (own full-width row, single line) ---------- */
+
+.scope-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 20px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 58px;
+  z-index: 19;
+  /* one line; no wrap. Swipe-scrollable (no visible bar) only if a machine
+     has more projects than fit — typical counts sit on one line. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.scope-bar::-webkit-scrollbar { display: none; }
+
+.scope-switch.scope-tabs {
+  flex-wrap: nowrap;
+}
+
+.scope-tabs .scope-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.scope-name {
+  display: inline-block;
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.scope-count {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted-2);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scope-btn.active .scope-count {
+  color: var(--muted);
+  background: var(--surface-3);
+}
+
+/* the project rooted at the server's cwd gets an accent dot even when inactive */
+.scope-btn.current .scope-dot { background: var(--accent); }
 
 /* ---------- Theme toggle + topbar right ---------- */
 
@@ -1540,6 +1624,88 @@ a:focus-visible {
   }
 }
 
+/* ---------- Settings: memory directory management ---------- */
+
+.settings-projects-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-project-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.settings-project-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-project-row:first-child { border-top: 0; }
+
+.settings-project-row.is-hidden { opacity: 0.55; }
+
+.settings-project-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-project-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-project-current {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.settings-project-path {
+  font-family: var(--font-code);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-project-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-project-empty {
+  padding: 18px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;
@@ -2271,11 +2437,181 @@ a:focus-visible {
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
   padding: 20px 24px 8px;
+  max-width: 1520px;
+  margin: 0 auto;
+}
+
+/* fixed column counts so a full page of 30 lands on a clean grid
+   (5 across on wide screens = 5x6) instead of drifting with content width */
+@media (min-width: 640px)  { .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 900px)  { .card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1120px) { .card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 1340px) { .card-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+
+/* ---------- Grid / list view toggle + list layout ---------- */
+
+.view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: auto;            /* anchor to the right edge of the toolbar row */
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+}
+
+.view-toggle button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  border-radius: var(--radius-xs);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, transform 0.08s;
+}
+
+.view-toggle button:hover:not(.active) { color: var(--text-soft); }
+.view-toggle button.active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+.view-toggle button:active { transform: scale(0.94); }
+
+/* ---------- Batch select + delete ---------- */
+
+.select-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.select-count {
+  font-size: 13px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.select-bar-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.danger-btn {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: filter 0.12s, transform 0.08s;
+}
+
+.danger-btn:hover:not(:disabled) { filter: brightness(0.94); }
+.danger-btn:active:not(:disabled) { transform: scale(0.98); }
+.danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+:root[data-theme="dark"] .danger-btn { color: #241011; }
+
+/* selection state on cards */
+.card { position: relative; }
+.card.selecting { cursor: pointer; }
+.card.selected {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.card-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.card.selected .card-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* keep the title clear of the corner checkbox in grid */
+.card.selecting .card-title { padding-right: 26px; }
+
+/* in list rows the checkbox sits in-flow at the left, not over the meta */
+.card-list .card-check { position: static; flex: 0 0 auto; }
+.card-list .card.selecting .card-title { padding-right: 0; }
+
+/* List view: each card reflows to a single horizontal row. */
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 24px 8px;
   max-width: 1440px;
   margin: 0 auto;
+}
+
+.card-list .card {
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  min-height: 0;
+  padding: 12px 16px;
+}
+
+.card-list .card-title {
+  flex: 0 0 32%;
+  max-width: 32%;
+  -webkit-line-clamp: 1;
+}
+
+.card-list .card-body {
+  flex: 1 1 auto;
+  -webkit-line-clamp: 1;
+}
+
+.card-list .card-foot {
+  flex: 0 0 auto;
+  margin-top: 0;
+  flex-wrap: nowrap;
+}
+
+/* tags live in the detail drawer in list mode; keep rows to one clean line */
+.card-list .card-tags { display: none; }
+
+@media (max-width: 768px) {
+  .card-list .card-title { flex-basis: auto; max-width: 60%; }
+  .card-list .card-body { display: none; }
 }
 
 .card {
@@ -2341,6 +2677,27 @@ a:focus-visible {
 }
 
 .card-body-muted { color: var(--muted); }
+
+/* Q / A line labels (memory cards, both grid and list) */
+.qa-tag {
+  display: inline-block;
+  min-width: 17px;
+  padding: 1px 5px;
+  margin-right: 7px;
+  border-radius: 5px;
+  font-family: var(--font-code);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  vertical-align: 1px;
+}
+.qa-q { background: var(--accent-soft); color: var(--accent); }
+.qa-a {
+  background: var(--surface-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
 
 .card-foot {
   display: flex;
@@ -2446,7 +2803,6 @@ a:focus-visible {
   .gallery-toolbar { padding: 10px 14px; }
 
   .card-grid {
-    grid-template-columns: 1fr;
     padding: 14px 14px 4px;
   }
 

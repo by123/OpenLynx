@@ -40,17 +40,25 @@ class WebOpenLynxHomeTest(unittest.TestCase):
             home.mkdir()
 
             from fastapi.testclient import TestClient
-            from lynx_memory import web
+            from lynx_memory import projects, web
 
+            # Isolate the registry to the temp home and stub the $HOME scan so
+            # the test never walks the real machine.
             with mock.patch.object(web, "GLOBAL_DATA_DIR", home), mock.patch.object(
-                web, "find_project_root", return_value=None
+                projects, "GLOBAL_DATA_DIR", home
+            ), mock.patch.object(
+                projects, "find_project_root", return_value=None
+            ), mock.patch.object(
+                projects, "scan", return_value=[]
             ):
                 app = web.create_app()
                 client = TestClient(app)
                 scopes = client.get("/api/scopes").json()
 
             self.assertEqual(scopes["global_dir"], str(home))
-            self.assertFalse(scopes["project"])
+            self.assertEqual(scopes["current_id"], "global")
+            # With no project markers, the only tab is the global store.
+            self.assertEqual([s["kind"] for s in scopes["scopes"]], ["global"])
 
 
 if __name__ == "__main__":

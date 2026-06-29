@@ -1,4 +1,5 @@
-export type Scope = "project" | "global";
+/** A scope id: "global", the legacy "project" alias, or a discovered project's hash id. */
+export type Scope = string;
 export type SearchMode = "keyword" | "semantic";
 
 /** Which lens the workspace is browsing through. */
@@ -70,15 +71,31 @@ export interface TopReferencedResponse {
   items: Turn[];
 }
 
+/** One tab: the global store or a discovered project memory directory. */
+export interface ScopeInfo {
+  id: string;
+  kind: "global" | "project";
+  /** Folder name for a project; for global the frontend shows the localized label. */
+  name: string;
+  /** The data dir (marker dir for a project, global store for global). */
+  dir: string;
+  /** Project root (parent of the marker), or null for global. */
+  root: string | null;
+  /** SQLite row count (no Chroma open). */
+  turn_count: number;
+  hidden: boolean;
+  /** True for the project rooted at the server's cwd. */
+  is_current: boolean;
+}
+
 export interface ScopesResponse {
-  project: boolean;
-  global: boolean;
-  project_dir: string | null;
   global_dir: string;
   cwd: string;
-  /** SQLite row counts only; used to pick default scope without opening Chroma. */
-  global_turn_count: number;
-  project_turn_count: number;
+  /** Scope to select by default: the cwd's project id, or "global". */
+  current_id: string;
+  /** Unix ts of the last $HOME scan, or null if never scanned. */
+  scanned_at: number | null;
+  scopes: ScopeInfo[];
 }
 
 export interface TagInfo {

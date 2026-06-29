@@ -36,12 +36,30 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
   const [date, setDate] = useState("");
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [page, setPage] = useState(1);
+  const [view, setView] = useState<"grid" | "list">(() => {
+    const s = typeof localStorage !== "undefined" ? localStorage.getItem("cm-view") : null;
+    return s === "list" ? "list" : "grid";
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cm-view", view);
+    } catch {
+      /* ignore */
+    }
+  }, [view]);
 
   const [memItems, setMemItems] = useState<Turn[]>([]);
   const [retItems, setRetItems] = useState<RetrievalSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // batch select + delete (memory lens only)
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     setQuery("");
@@ -50,7 +68,46 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
     setSource("all");
     setDate("");
     setPage(1);
+    setSelectMode(false);
+    setSelectedIds(new Set());
   }, [lens, scope]);
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const selectAllOnPage = () =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      memItems.forEach((m) => next.add(m.id));
+      return next;
+    });
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(t("select.confirm", { n: ids.length }))) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.bulkDeleteTurns(scope, ids);
+      setSelectedIds(new Set());
+      setSelectMode(false);
+      setPage(1);
+      setReloadTick((x) => x + 1);
+    } catch (e) {
+      setError(t("select.deleteFail", { e: String(e) }));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     if (!scopesReady || lens !== "memory") return;
@@ -101,7 +158,7 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
     return () => {
       cancelled = true;
     };
-  }, [scope, lens, source, page, submitted, activeTag, mode, date, scopesReady, refreshKey]);
+  }, [scope, lens, source, page, submitted, activeTag, mode, date, scopesReady, refreshKey, reloadTick]);
 
   const totalPages = useMemo(() => {
     if (source === "top") return 1;
@@ -210,8 +267,40 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
                   {t("clear")}
                 </button>
               )}
+
+              <button
+                type="button"
+                className={`ghost-btn select-toggle${selectMode ? " active" : ""}`}
+                onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+                aria-pressed={selectMode}
+              >
+                {selectMode ? t("select.done") : t("select.enter")}
+              </button>
             </>
           )}
+
+          <div className="view-toggle" role="tablist" aria-label={t("view.layout")}>
+            <button
+              role="tab"
+              aria-selected={view === "grid"}
+              className={view === "grid" ? "active" : ""}
+              onClick={() => setView("grid")}
+              title={t("view.grid")}
+              aria-label={t("view.grid")}
+            >
+              ▦
+            </button>
+            <button
+              role="tab"
+              aria-selected={view === "list"}
+              className={view === "list" ? "active" : ""}
+              onClick={() => setView("list")}
+              title={t("view.list")}
+              aria-label={t("view.list")}
+            >
+              ☰
+            </button>
+          </div>
         </div>
 
         {lens === "memory" && source === "all" && sortedTags.length > 0 && (
@@ -235,6 +324,33 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
           <span>{statusText}</span>
           {loading && <span className="loading">{t("loading")}</span>}
         </div>
+
+        {selectMode && lens === "memory" && (
+          <div className="select-bar">
+            <span className="select-count">{t("select.count", { n: selectedIds.size })}</span>
+            <div className="select-bar-actions">
+              <button type="button" className="ghost-btn" onClick={selectAllOnPage}>
+                {t("select.all")}
+              </button>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => setSelectedIds(new Set())}
+                disabled={selectedIds.size === 0}
+              >
+                {t("select.clearSel")}
+              </button>
+              <button
+                type="button"
+                className="danger-btn"
+                onClick={handleBulkDelete}
+                disabled={selectedIds.size === 0 || deleting}
+              >
+                {deleting ? t("select.deleting") : t("select.delete", { n: selectedIds.size })}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {error && <div className="error" style={{ margin: "16px 24px" }}>{error}</div>}
@@ -257,17 +373,29 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
           </p>
         </div>
       ) : (
-        <div className="card-grid">
+        <div className={view === "list" ? "card-list" : "card-grid"}>
           {lens === "memory"
-            ? memItems.map((m) => (
+            ? memItems.map((m) => {
+                const isSel = selectedIds.has(m.id);
+                return (
                 <button
                   key={m.id}
-                  className={`card${selectedId === m.id ? " active" : ""}`}
-                  onClick={() => onSelect({ kind: "memory", turn: m })}
+                  className={`card${selectedId === m.id ? " active" : ""}${selectMode ? " selecting" : ""}${isSel ? " selected" : ""}`}
+                  onClick={() => (selectMode ? toggleSelect(m.id) : onSelect({ kind: "memory", turn: m }))}
+                  aria-pressed={selectMode ? isSel : undefined}
                 >
-                  <span className="card-title">{preview(m.summary || m.user_msg, 84)}</span>
+                  {selectMode && (
+                    <span className={`card-check${isSel ? " on" : ""}`} aria-hidden="true">
+                      {isSel ? "✓" : ""}
+                    </span>
+                  )}
+                  <span className="card-title">
+                    <span className="qa-tag qa-q">{t("qa.q")}</span>
+                    {preview(m.user_msg, 120)}
+                  </span>
                   <span className="card-body">
-                    {m.summary ? t("card.q", { text: preview(m.user_msg, 150) }) : preview(m.assistant_msg, 150)}
+                    <span className="qa-tag qa-a">{t("qa.a")}</span>
+                    {preview(m.assistant_msg, 160)}
                   </span>
                   <span className="card-foot">
                     {m.tags.length > 0 && (
@@ -288,7 +416,8 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
                     </span>
                   </span>
                 </button>
-              ))
+                );
+              })
             : retItems.map((it) => (
                 <button
                   key={it.id}

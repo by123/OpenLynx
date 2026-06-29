@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import projects as projects_mod
 from .config import GLOBAL_DATA_DIR, find_project_root, load_env
 from .storage import Memory, get_shared_memory, memory_lock
 
@@ -36,8 +37,10 @@ def _scope_dir(scope: str) -> Optional[Path]:
     if scope == "global":
         return GLOBAL_DATA_DIR
     if scope == "project":
+        # legacy alias: the project rooted at the server's cwd
         return find_project_root(Path.cwd())
-    raise HTTPException(status_code=400, detail=f"unknown scope: {scope!r}")
+    # otherwise a discovered project id — resolved (and validated) via the registry
+    return projects_mod.marker_for_id(scope)
 
 
 def _sqlite_turn_count(data_dir: Path) -> int:
@@ -88,6 +91,14 @@ class TagBody(BaseModel):
 class OpenFileBody(BaseModel):
     path: str
     line: Optional[int] = None
+
+
+class VisibilityBody(BaseModel):
+    hidden: bool
+
+
+class BulkDeleteBody(BaseModel):
+    ids: list[str]
 
 
 class SettingsBody(BaseModel):
@@ -169,20 +180,78 @@ def create_app() -> FastAPI:
         )
         return response
 
+    def _build_scope_list() -> dict:
+        """Global store + every discovered project, one entry per tab."""
+        cwd = Path.cwd()
+        current_id = projects_mod.ensure_current(cwd)
+        reg = projects_mod.load_registry()
+        hidden = set(reg.get("hidden", []))
+
+        scopes: list[dict] = [{
+            "id": "global",
+            "kind": "global",
+            "name": "All projects",
+            "dir": str(GLOBAL_DATA_DIR),
+            "root": None,
+            "turn_count": _sqlite_turn_count(GLOBAL_DATA_DIR),
+            "hidden": False,
+            "is_current": current_id == "global",
+        }]
+
+        projects: list[dict] = []
+        for pid, ent in reg.get("projects", {}).items():
+            marker = Path(ent.get("marker", ""))
+            if not marker.is_dir():
+                continue
+            root = ent.get("root") or str(marker.parent)
+            projects.append({
+                "id": pid,
+                "kind": "project",
+                "name": Path(root).name or root,
+                "dir": str(marker),
+                "root": root,
+                "turn_count": _sqlite_turn_count(marker),
+                "hidden": pid in hidden,
+                "is_current": pid == current_id,
+            })
+        # most memories first (global is prepended separately and stays first)
+        projects.sort(key=lambda e: (-e["turn_count"], e["name"].lower()))
+        scopes.extend(projects)
+
+        return {
+            "global_dir": str(GLOBAL_DATA_DIR),
+            "cwd": str(cwd),
+            "current_id": current_id,
+            "scanned_at": reg.get("scanned_at"),
+            "scopes": scopes,
+        }
+
     @app.get("/api/scopes")
     def get_scopes() -> dict:
-        proj = find_project_root(Path.cwd())
-        g_count = _sqlite_turn_count(GLOBAL_DATA_DIR)
-        p_count = _sqlite_turn_count(proj) if proj else 0
-        return {
-            "project": proj is not None,
-            "global": True,
-            "project_dir": str(proj) if proj else None,
-            "global_dir": str(GLOBAL_DATA_DIR),
-            "cwd": str(Path.cwd()),
-            "global_turn_count": g_count,
-            "project_turn_count": p_count,
-        }
+        # First-ever launch: seed the registry with a one-time $HOME scan so
+        # all projects show up immediately. Later launches use the cache and
+        # rely on the hook + manual rescan to stay fresh.
+        if not projects_mod.is_scanned():
+            try:
+                projects_mod.rescan()
+            except Exception:
+                logger.exception("initial project scan failed")
+        return _build_scope_list()
+
+    @app.post("/api/projects/rescan")
+    def rescan_projects() -> dict:
+        try:
+            projects_mod.rescan()
+        except Exception as e:
+            logger.exception("project rescan failed")
+            raise HTTPException(status_code=500, detail=f"rescan failed: {e}") from e
+        return _build_scope_list()
+
+    @app.put("/api/projects/{pid}/visibility")
+    def set_project_visibility(pid: str, body: VisibilityBody) -> dict:
+        if not projects_mod.set_hidden(pid, body.hidden):
+            raise HTTPException(status_code=404, detail="project not found")
+        return {"ok": True}
 
     @app.get("/api/turns")
     def get_turns(
@@ -284,6 +353,21 @@ def create_app() -> FastAPI:
         with _memory_for(scope) as mem:
             items = mem.list_retrievals_for_turn(turn_id)
         return {"items": items, "total": len(items)}
+
+    @app.post("/api/turns/{scope}/bulk-delete")
+    def bulk_delete_turns(scope: str, body: BulkDeleteBody) -> dict:
+        ids = [i for i in body.ids if i]
+        if not ids:
+            return {"ok": True, "deleted": 0}
+        deleted = 0
+        with _memory_for(scope) as mem:
+            for turn_id in ids:
+                try:
+                    if mem.forget(turn_id):
+                        deleted += 1
+                except Exception:
+                    logger.exception("bulk-delete: failed to forget %s", turn_id)
+        return {"ok": True, "deleted": deleted}
 
     @app.delete("/api/turns/{scope}/{turn_id}")
     def delete_turn(scope: str, turn_id: str) -> dict:
