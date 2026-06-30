@@ -181,6 +181,7 @@ export default function App() {
         refreshKey={refreshKey}
         selectedId={selectedId}
         onSelect={setSelection}
+        onCountsChanged={reloadScopes}
       />
 
       {selection && (
@@ -192,6 +193,8 @@ export default function App() {
             onDeleted={() => {
               setSelection(null);
               setRefreshKey((k) => k + 1);
+              // a delete changes the tab's memory count — refresh the badges too
+              reloadScopes();
             }}
             onOpenMemory={(turn: Turn) => setSelection({ kind: "memory", turn })}
           />

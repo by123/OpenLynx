@@ -44,8 +44,17 @@ def _scope_dir(scope: str) -> Optional[Path]:
 
 
 def _sqlite_turn_count(data_dir: Path) -> int:
-    """Count turns without opening Chroma (avoids concurrent PersistentClient init)."""
-    db_path = data_dir / "db" / "memory.db"
+    """Count turns without opening Chroma (avoids concurrent PersistentClient init).
+
+    When a store is libSQL-synced, Memory reads/writes the embedded replica
+    `sync-memory.db`; the bare `memory.db` is left frozen at its pre-sync state
+    (often empty). Count whichever file Memory actually opens — preferring the
+    replica when present — so the tab badge matches the listing instead of
+    reporting 0 for a synced store.
+    """
+    base = data_dir / "db" / "memory.db"
+    replica = base.with_name("sync-" + base.name)
+    db_path = replica if replica.is_file() else base
     if not db_path.is_file():
         return 0
     try:
@@ -363,14 +372,11 @@ def create_app() -> FastAPI:
         ids = [i for i in body.ids if i]
         if not ids:
             return {"ok": True, "deleted": 0}
-        deleted = 0
+        # Set-based delete: one UPDATE per chunk + a single batched vector
+        # delete + one commit, instead of a write/round-trip per id (which on a
+        # synced store is one remote push per id).
         with _memory_for(scope) as mem:
-            for turn_id in ids:
-                try:
-                    if mem.forget(turn_id):
-                        deleted += 1
-                except Exception:
-                    logger.exception("bulk-delete: failed to forget %s", turn_id)
+            deleted = mem.forget_many(ids)
         return {"ok": True, "deleted": deleted}
 
     @app.delete("/api/turns/{scope}/{turn_id}")

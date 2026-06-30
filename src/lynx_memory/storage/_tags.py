@@ -109,19 +109,52 @@ class _TagsMixin:
         *,
         source: str,
     ) -> None:
+        """Replace this turn's `source` tags in a single transaction.
+
+        Clears the source's existing tags, then bulk-inserts the new set with
+        set-based multi-row INSERTs and commits once — instead of a per-tag
+        insert+commit (each of which is its own remote round-trip on a synced
+        store). Runs on the ingest hot path via `refresh_auto_tags`.
+        """
         self.db.execute(
             "DELETE FROM turn_tags WHERE turn_id = ? AND source = ?",
             (turn_id, source),
         )
-        self.db.commit()
+        # De-dup by cleaned name, preserving order; drop blanks.
+        rows: List[tuple] = []
+        seen: set = set()
         for item in tags:
-            self.add_tag(
-                turn_id,
-                item["name"],
-                kind=item.get("kind") or "custom",
-                source=source,
-                confidence=item.get("confidence"),
+            name = self._clean_tag_name(item.get("name", ""))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rows.append((name, item.get("kind") or "custom", item.get("confidence")))
+
+        # Only attach tags to a live turn (mirrors add_tag's existence guard);
+        # the DELETE above still runs so stale tags are cleared either way.
+        live = self.db.execute(
+            "SELECT 1 FROM turns WHERE id = ? AND deleted_at IS NULL", (turn_id,)
+        ).fetchone()
+        if rows and live is not None:
+            now = time.time()
+            self.db.execute(
+                "INSERT OR IGNORE INTO tags(name, kind, created_at) VALUES "
+                + ",".join(["(?,?,?)"] * len(rows)),
+                [v for (name, kind, _conf) in rows for v in (name, kind, now)],
             )
+            # Upgrade any tag still on the default 'custom' kind to its real one.
+            for name, kind, _conf in rows:
+                self.db.execute(
+                    "UPDATE tags SET kind = ? "
+                    "WHERE name = ? AND (kind IS NULL OR kind = '' OR kind = 'custom')",
+                    (kind, name),
+                )
+            self.db.execute(
+                "INSERT OR IGNORE INTO turn_tags(turn_id, tag_name, source, confidence) VALUES "
+                + ",".join(["(?,?,?,?)"] * len(rows)),
+                [v for (name, _kind, conf) in rows for v in (turn_id, name, source, conf)],
+            )
+        self.db.commit()
 
     def refresh_auto_tags(
         self,

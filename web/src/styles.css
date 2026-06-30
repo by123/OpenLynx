@@ -687,6 +687,40 @@ a:focus-visible {
 
 .loading { color: var(--accent); }
 
+/* ── loading spinners + busy overlay ── */
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+.spinner-xs { width: 9px; height: 9px; border-width: 1.5px; margin-right: 0; vertical-align: -1px; }
+.spinner-lg { width: 22px; height: 22px; border-width: 2.5px; margin-right: 0; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.gallery.busy { position: relative; }
+.busy-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--accent);
+  font-size: 13px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  backdrop-filter: blur(1.5px);
+  animation: fadeIn 0.12s ease;
+}
+
 .error {
   background: var(--danger-soft);
   border: 1px solid var(--danger);
@@ -775,7 +809,12 @@ a:focus-visible {
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 
-.danger:hover {
+.danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.danger:hover:not(:disabled) {
   color: var(--danger);
   border-color: var(--danger);
   background: var(--danger-soft);
@@ -1122,7 +1161,17 @@ a:focus-visible {
   opacity: 0.55;
 }
 
-.tag-chip button:hover { opacity: 1; }
+.tag-chip button:hover:not(:disabled) { opacity: 1; }
+.tag-chip button:disabled { cursor: default; opacity: 0.8; }
+.tag-chip.removing { opacity: 0.55; }
+
+.add-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.add-tag.busy { color: var(--accent); }
+.add-tag input:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .add-tag input {
   background: transparent;

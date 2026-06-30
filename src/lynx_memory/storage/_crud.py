@@ -3,7 +3,16 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+# Keep `IN (...)` lists under SQLite's bound-variable limit (999 on older
+# builds) so a set-based delete stays a single statement per chunk.
+_SQL_MAX_VARS = 900
+
+
+def _chunked(items: List[str], size: int) -> Iterator[List[str]]:
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
 
 
 class _CrudMixin:
@@ -230,27 +239,42 @@ class _CrudMixin:
         return cur.rowcount > 0
 
     def forget_turn(self, turn_id: str) -> bool:
-        """Soft-delete a single turn: stamp `deleted_at` and drop its vector.
+        """Soft-delete a single turn (see `forget_turns` for the set-based form)."""
+        return self.forget_turns([turn_id]) > 0
 
-        The row, its tags and its retrieval-hit links are all kept (the data
-        stays — it's just hidden from every read path, which filters
-        `deleted_at IS NULL`). Only the vector is removed so the turn stops
-        surfacing in semantic search. The UPDATE is an ordinary write, so on a
-        synced store it propagates to the remote Turso primary through the
-        libSQL embedded replica — no separate push step.
+    def forget_turns(self, turn_ids: List[str]) -> int:
+        """Soft-delete many turns in one set-based pass.
+
+        Stamps `deleted_at` on every still-live id with one `UPDATE ... IN (...)`
+        per chunk, drops all their vectors in one batched delete, and commits
+        once — instead of an UPDATE/commit/round-trip per id. On a synced store
+        every commit propagates to the remote Turso primary, and the relational
+        UPDATE and the vector DELETE share the one libSQL connection, so the
+        whole batch lands as a single remote write. The rows, tags and
+        retrieval links are kept; reads filter `deleted_at IS NULL`. Returns how
+        many turns transitioned from live to deleted.
         """
-        cur = self.db.execute(
-            "UPDATE turns SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
-            (time.time(), turn_id),
-        )
-        self.db.commit()
-        if cur.rowcount == 0:
-            return False
+        ids = [i for i in dict.fromkeys(turn_ids) if i]
+        if not ids:
+            return 0
+        now = time.time()
+        affected = 0
+        for chunk in _chunked(ids, _SQL_MAX_VARS - 1):  # -1 for the `now` bind
+            placeholders = ",".join("?" for _ in chunk)
+            cur = self.db.execute(
+                f"UPDATE turns SET deleted_at = ? "
+                f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+                [now, *chunk],
+            )
+            affected += max(cur.rowcount, 0)
+        # Drop the vectors on the SAME connection, then commit once: when synced
+        # the UPDATE + vector DELETE ride a single transaction → one remote push.
         try:
-            self.turns.delete(ids=[turn_id])
+            self.turns.delete(ids=ids)
         except Exception:
             pass
-        return True
+        self.db.commit()
+        return affected
 
     # ---------- summaries ----------
     def add_summary(self, session_id: str, summary: str, turn_count: int) -> str:
@@ -295,20 +319,30 @@ class _CrudMixin:
         return None
 
     def forget_summary(self, summary_id: str) -> bool:
-        """Soft-delete a summary (see `forget_turn`): stamp `deleted_at`, keep
-        the row, drop its vector. Propagates to the remote like any write."""
-        cur = self.db.execute(
-            "UPDATE summaries SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
-            (time.time(), summary_id),
-        )
-        self.db.commit()
-        if cur.rowcount == 0:
-            return False
+        """Soft-delete a single summary (see `forget_summaries`)."""
+        return self.forget_summaries([summary_id]) > 0
+
+    def forget_summaries(self, summary_ids: List[str]) -> int:
+        """Set-based soft-delete for summaries (see `forget_turns`)."""
+        ids = [i for i in dict.fromkeys(summary_ids) if i]
+        if not ids:
+            return 0
+        now = time.time()
+        affected = 0
+        for chunk in _chunked(ids, _SQL_MAX_VARS - 1):
+            placeholders = ",".join("?" for _ in chunk)
+            cur = self.db.execute(
+                f"UPDATE summaries SET deleted_at = ? "
+                f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+                [now, *chunk],
+            )
+            affected += max(cur.rowcount, 0)
         try:
-            self.summaries.delete(ids=[summary_id])
+            self.summaries.delete(ids=ids)
         except Exception:
             pass
-        return True
+        self.db.commit()
+        return affected
 
     def forget(self, item_id: str) -> bool:
         """Back-compat dispatcher: delete a turn or, failing that, a summary.
@@ -318,6 +352,19 @@ class _CrudMixin:
         if self.forget_turn(item_id):
             return True
         return self.forget_summary(item_id)
+
+    def forget_many(self, item_ids: List[str]) -> int:
+        """Set-based counterpart to `forget`: soft-delete a mix of turn and
+        summary ids in a constant number of statements.
+
+        Turn and summary ids occupy distinct uuid spaces, so running both batch
+        deletes over the full id list is safe — each id only matches rows in its
+        own table. Returns the total number of items actually deleted.
+        """
+        ids = [i for i in dict.fromkeys(item_ids) if i]
+        if not ids:
+            return 0
+        return self.forget_turns(ids) + self.forget_summaries(ids)
 
     # ---------- goals ----------
     def get_goal(self) -> Optional[Dict[str, Any]]:

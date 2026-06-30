@@ -58,7 +58,10 @@ def get_shared_memory(data_dir: Optional[Path] = None) -> Memory:
         with _cache_guard:
             if key in _shared_memory_cache:
                 return _shared_memory_cache[key]
-            mem = Memory(data_dir=key)
+            # Long-lived (never .close()'d) — don't hold the replica's
+            # cross-process lock for the whole process lifetime or hooks would
+            # starve; it re-locks briefly inside sync() instead.
+            mem = Memory(data_dir=key, hold_replica_lock=False)
             _shared_memory_cache[key] = mem
             _shared_memory_locks[key] = threading.RLock()
             return mem

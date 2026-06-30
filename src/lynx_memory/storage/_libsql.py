@@ -149,19 +149,37 @@ class LibsqlVectorCollection:
         self.upsert(ids, embeddings)
 
     def upsert(self, ids, embeddings, documents=None, metadatas=None) -> None:
+        rows = []
         for i, vec in zip(ids, embeddings):
             vals = [float(x) for x in vec]
-            blob = struct.pack(f"<{len(vals)}f", *vals)
+            rows.append((i, len(vals), struct.pack(f"<{len(vals)}f", *vals)))
+        if not rows:
+            return
+        # One multi-row INSERT per chunk, not one per id: a single write
+        # statement (and a single sync on commit) instead of N. 3 bind vars
+        # per row, kept well under SQLite's variable limit.
+        for start in range(0, len(rows), 300):
+            chunk = rows[start : start + 300]
             self.conn.execute(
-                f"INSERT INTO {self.table}(id, dim, vec) VALUES (?,?,?) "
-                f"ON CONFLICT(id) DO UPDATE SET dim=excluded.dim, vec=excluded.vec",
-                (i, len(vals), blob),
+                f"INSERT INTO {self.table}(id, dim, vec) VALUES "
+                + ",".join(["(?,?,?)"] * len(chunk))
+                + " ON CONFLICT(id) DO UPDATE SET dim=excluded.dim, vec=excluded.vec",
+                [v for row in chunk for v in row],
             )
         self.conn.commit()
 
     def delete(self, ids=None) -> None:
-        for i in ids or []:
-            self.conn.execute(f"DELETE FROM {self.table} WHERE id=?", (i,))
+        ids = [i for i in (ids or []) if i is not None]
+        if not ids:
+            return
+        # Set-based delete: one `DELETE ... WHERE id IN (...)` per chunk rather
+        # than a round-trip per id (the whole point on a synced replica).
+        for start in range(0, len(ids), 800):
+            chunk = ids[start : start + 800]
+            placeholders = ",".join("?" for _ in chunk)
+            self.conn.execute(
+                f"DELETE FROM {self.table} WHERE id IN ({placeholders})", chunk
+            )
         self.conn.commit()
 
     def query(self, query_embeddings, n_results: int = 10, **_kw) -> Dict[str, list]:

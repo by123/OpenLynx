@@ -22,11 +22,14 @@ interface Props {
   refreshKey: number;
   selectedId: string | null;
   onSelect: (sel: Selection) => void;
+  /** Notify the parent that turn counts changed (e.g. after a bulk delete) so
+   *  the scope tab badges can refresh. */
+  onCountsChanged?: () => void;
 }
 
 type Source = "all" | "top";
 
-export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, onSelect }: Props) {
+export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, onSelect, onCountsChanged }: Props) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
@@ -102,6 +105,7 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
       setSelectMode(false);
       setPage(1);
       setReloadTick((x) => x + 1);
+      onCountsChanged?.(); // refresh the scope tab badges
     } catch (e) {
       setError(t("select.deleteFail", { e: String(e) }));
     } finally {
@@ -202,7 +206,13 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
   const isEmpty = !loading && (lens === "memory" ? memItems.length === 0 : retItems.length === 0);
 
   return (
-    <main className="gallery">
+    <main className={`gallery${deleting ? " busy" : ""}`}>
+      {deleting && (
+        <div className="busy-overlay" role="status" aria-live="polite">
+          <span className="spinner spinner-lg" aria-hidden="true" />
+          <span>{t("select.deleting")}</span>
+        </div>
+      )}
       <div className="gallery-toolbar">
         <div className="gallery-toolbar-row">
           <form className="gallery-search" onSubmit={onSearch}>
@@ -329,14 +339,14 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
           <div className="select-bar">
             <span className="select-count">{t("select.count", { n: selectedIds.size })}</span>
             <div className="select-bar-actions">
-              <button type="button" className="ghost-btn" onClick={selectAllOnPage}>
+              <button type="button" className="ghost-btn" onClick={selectAllOnPage} disabled={deleting}>
                 {t("select.all")}
               </button>
               <button
                 type="button"
                 className="ghost-btn"
                 onClick={() => setSelectedIds(new Set())}
-                disabled={selectedIds.size === 0}
+                disabled={selectedIds.size === 0 || deleting}
               >
                 {t("select.clearSel")}
               </button>
@@ -346,7 +356,14 @@ export function MemoryGrid({ scope, lens, scopesReady, refreshKey, selectedId, o
                 onClick={handleBulkDelete}
                 disabled={selectedIds.size === 0 || deleting}
               >
-                {deleting ? t("select.deleting") : t("select.delete", { n: selectedIds.size })}
+                {deleting ? (
+                  <>
+                    <span className="spinner" aria-hidden="true" />
+                    {t("select.deleting")}
+                  </>
+                ) : (
+                  t("select.delete", { n: selectedIds.size })
+                )}
               </button>
             </div>
           </div>

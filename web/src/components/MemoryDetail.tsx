@@ -67,6 +67,9 @@ function MemoryView({
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summaryErr, setSummaryErr] = useState<string | null>(null);
   const [retr, setRetr] = useState<TurnRetrievalsResponse | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [tagBusy, setTagBusy] = useState(false);
+  const [removing, setRemoving] = useState<Set<string>>(new Set());
 
   const displaySource = inferSummarySource(summarySource, summaryModel);
 
@@ -101,7 +104,8 @@ function MemoryView({
   const addTag = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean = newTag.trim().replace(/^#/, "");
-    if (!clean) return;
+    if (!clean || tagBusy) return;
+    setTagBusy(true);
     try {
       await api.addTag(scope, turn.id, clean, "custom");
       setTags((prev) =>
@@ -115,26 +119,38 @@ function MemoryView({
       onChanged();
     } catch (e) {
       alert(t("tag.addFail", { e: String(e) }));
+    } finally {
+      setTagBusy(false);
     }
   };
 
   const removeTag = async (name: string) => {
+    if (removing.has(name)) return;
+    setRemoving((prev) => new Set(prev).add(name));
     try {
       await api.removeTag(scope, turn.id, name);
       setTags((prev) => prev.filter((x) => x.name !== name));
       onChanged();
     } catch (e) {
       alert(t("tag.removeFail", { e: String(e) }));
+    } finally {
+      setRemoving((prev) => {
+        const next = new Set(prev);
+        next.delete(name);
+        return next;
+      });
     }
   };
 
   const del = async () => {
-    if (!confirm(t("detail.delete.confirm"))) return;
+    if (deleting || !confirm(t("detail.delete.confirm"))) return;
+    setDeleting(true);
     try {
       await api.deleteTurn(scope, turn.id);
-      onDeleted();
+      onDeleted(); // unmounts this view on success
     } catch (e) {
       alert(t("detail.deleteFail", { e: String(e) }));
+      setDeleting(false);
     }
   };
 
@@ -148,8 +164,15 @@ function MemoryView({
             <span className="entry-ref">{t("detail.retrievedTimes", { n: turn.retrieval_count })}</span>
           )}
         </div>
-        <button className="danger" onClick={del}>
-          {t("detail.delete")}
+        <button className="danger" onClick={del} disabled={deleting}>
+          {deleting ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              {t("detail.deleting")}
+            </>
+          ) : (
+            t("detail.delete")
+          )}
         </button>
       </div>
 
@@ -189,16 +212,33 @@ function MemoryView({
       </div>
 
       <div className="tags-row">
-        {tags.map((tag) => (
-          <span key={`${tag.kind}:${tag.name}`} className="tag-chip" title={`${tag.source} tag`}>
-            {`[${tag.kind}] ${tag.name}`}
-            <button title={t("tag.remove")} onClick={() => removeTag(tag.name)}>
-              ×
-            </button>
-          </span>
-        ))}
-        <form onSubmit={addTag} className="add-tag">
-          <input placeholder={t("tag.add")} value={newTag} onChange={(e) => setNewTag(e.target.value)} />
+        {tags.map((tag) => {
+          const busy = removing.has(tag.name);
+          return (
+            <span
+              key={`${tag.kind}:${tag.name}`}
+              className={`tag-chip${busy ? " removing" : ""}`}
+              title={`${tag.source} tag`}
+            >
+              {`[${tag.kind}] ${tag.name}`}
+              <button
+                title={t("tag.remove")}
+                onClick={() => removeTag(tag.name)}
+                disabled={busy}
+              >
+                {busy ? <span className="spinner spinner-xs" aria-hidden="true" /> : "×"}
+              </button>
+            </span>
+          );
+        })}
+        <form onSubmit={addTag} className={`add-tag${tagBusy ? " busy" : ""}`}>
+          <input
+            placeholder={t("tag.add")}
+            value={newTag}
+            onChange={(e) => setNewTag(e.target.value)}
+            disabled={tagBusy}
+          />
+          {tagBusy && <span className="spinner spinner-xs" aria-hidden="true" />}
         </form>
       </div>
 

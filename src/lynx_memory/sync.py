@@ -127,12 +127,22 @@ def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> d
     replica file against a new remote makes `raw.sync()` fail with
     "server returned a lower generation than local".
     """
-    from .storage._base import SCHEMA, _apply_migrations
+    from .storage._base import (
+        SCHEMA,
+        _acquire_replica_lock,
+        _apply_migrations,
+        _release_replica_lock,
+    )
     from .storage._libsql import connect_replica
 
     db_path = paths_for(data_dir)["db_path"]
     chroma_dir = paths_for(data_dir)["chroma_dir"]
     replica = db_path.with_name("sync-" + db_path.name)
+
+    # Hold the same cross-process lock the hooks use: this re-provision deletes
+    # and recreates the replica, which would corrupt a hook mid-write. Released
+    # at the end (and on process exit, since flock is fd-scoped).
+    _lock_fd = _acquire_replica_lock(replica, 60)
 
     # 1. Read every table from the freshest local source into memory *before*
     #    touching the replica file (it doubles as the new remote's replica path).
@@ -238,6 +248,7 @@ def migrate_local_to_remote(data_dir: Path, sync_url: str, sync_token: str) -> d
 
     remote.sync()  # push everything we just wrote up to the remote
     remote.close()
+    _release_replica_lock(_lock_fd)
     return summary
 
 

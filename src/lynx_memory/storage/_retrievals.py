@@ -22,19 +22,22 @@ class _RetrievalsMixin:
             "VALUES(?,?,?,?,?,?,?)",
             (rid, ts, session_id, cwd, prompt, scope_used, len(hits)),
         )
-        for rank, h in enumerate(hits):
-            self.db.execute(
-                "INSERT OR IGNORE INTO retrieval_hits(retrieval_id, turn_id, scope, kind, score, rank) "
-                "VALUES(?,?,?,?,?,?)",
-                (
-                    rid,
-                    h.get("id"),
-                    h.get("scope"),
-                    h.get("kind"),
-                    float(h.get("score") or 0.0),
-                    rank,
-                ),
-            )
+        # All hits in one set-based multi-row INSERT (6 bind vars/row, chunked
+        # under SQLite's variable limit) instead of one INSERT per hit.
+        if hits:
+            rows = [
+                (rid, h.get("id"), h.get("scope"), h.get("kind"),
+                 float(h.get("score") or 0.0), rank)
+                for rank, h in enumerate(hits)
+            ]
+            for start in range(0, len(rows), 150):
+                chunk = rows[start : start + 150]
+                self.db.execute(
+                    "INSERT OR IGNORE INTO retrieval_hits"
+                    "(retrieval_id, turn_id, scope, kind, score, rank) VALUES "
+                    + ",".join(["(?,?,?,?,?,?)"] * len(chunk)),
+                    [v for row in chunk for v in row],
+                )
         self.db.commit()
         return rid
 

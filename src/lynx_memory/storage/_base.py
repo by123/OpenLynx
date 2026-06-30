@@ -205,8 +205,56 @@ def _apply_migrations(db: sqlite3.Connection) -> None:
         db.execute(f"PRAGMA user_version = {version}")
 
 
+def _replica_lock_path(replica: Path) -> Path:
+    return replica.with_name(replica.name + ".lock")
+
+
+def _acquire_replica_lock(replica: Path, timeout: float):
+    """Acquire an exclusive *inter-process* lock for a libSQL embedded replica.
+
+    Hooks run as separate short-lived OS processes; the in-process
+    `threading.Lock`s in `storage/__init__` don't coordinate across them, so
+    two hooks writing the same `sync-<db>` replica concurrently corrupt it
+    ("database disk image is malformed" / "wal_insert_begin failed"). A POSIX
+    `flock` serializes them. It auto-releases when the fd closes or the process
+    dies, so a killed/timed-out hook never leaves a stale lock.
+
+    Returns the held fd, or None if `timeout` seconds elapse without acquiring
+    (caller then degrades to plain local sqlite rather than blocking forever).
+    """
+    import fcntl
+    import time
+
+    fd = os.open(str(_replica_lock_path(replica)), os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.05)
+
+
+def _release_replica_lock(fd) -> None:
+    if fd is None:
+        return
+    import fcntl
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 class _MemoryBase:
-    def __init__(self, data_dir: Optional[Path] = None) -> None:
+    def __init__(self, data_dir: Optional[Path] = None, *, hold_replica_lock: bool = True) -> None:
         self.data_dir = data_dir or GLOBAL_DATA_DIR
         paths = paths_for(self.data_dir)
         ensure_dirs(self.data_dir)
@@ -214,6 +262,14 @@ class _MemoryBase:
 
         self.db_path = paths["db_path"]
         self.chroma_dir = paths["chroma_dir"]
+
+        # Cross-process lock for the libSQL replica. Short-lived hook/CLI
+        # processes hold it for their whole lifetime (`hold_replica_lock=True`)
+        # so their interleaved writes can't corrupt the replica; the long-lived
+        # shared Memory (web UI) sets this False to avoid starving hooks, and
+        # only locks briefly around `sync()`.
+        self._hold_replica_lock = hold_replica_lock
+        self._replica_lock_fd = None
 
         self.synced, init_schema = self._open_db()
         if init_schema:
@@ -230,6 +286,14 @@ class _MemoryBase:
         self.db.commit()
         if self.synced and init_schema:
             self.db.sync()
+
+        # The schema/migration/first-sync above is the most replica-mutating
+        # phase, so it always runs under the lock. A long-lived shared Memory
+        # (web UI) drops it now so it doesn't block hooks; it re-locks briefly
+        # inside `sync()`. Hooks keep holding it until `close()`.
+        if self.synced and not self._hold_replica_lock:
+            _release_replica_lock(self._replica_lock_fd)
+            self._replica_lock_fd = None
 
         if self.synced:
             # vectors live in Turso (sync) — brute-force cosine, no Chroma.
@@ -323,12 +387,28 @@ class _MemoryBase:
                 stale = (not sentinel.exists()) or (time.time() - sentinel.stat().st_mtime >= interval)
                 do_sync = first_time or stale
 
+                # Serialize replica access across processes (see
+                # _acquire_replica_lock). Bounded wait, then degrade to local
+                # sqlite rather than block a latency-sensitive hook forever.
+                try:
+                    lock_timeout = float(os.environ.get("OPENLYNX_SYNC_LOCK_TIMEOUT", "30") or 30)
+                except ValueError:
+                    lock_timeout = 30.0
+                self._replica_lock_fd = _acquire_replica_lock(replica, lock_timeout)
+                if self._replica_lock_fd is None:
+                    logger.warning(
+                        "libSQL replica lock busy after %.0fs; using local sqlite", lock_timeout
+                    )
+                    raise TimeoutError("replica lock contended")
+
                 self.db = connect_replica(str(replica), sync_url, sync_token, do_sync=do_sync)
                 if do_sync:
                     sentinel.touch()
                 return True, first_time
             except Exception:
                 logger.exception("libSQL sync connect failed; falling back to local sqlite")
+                _release_replica_lock(self._replica_lock_fd)
+                self._replica_lock_fd = None
 
         self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -336,14 +416,34 @@ class _MemoryBase:
 
     def sync(self) -> None:
         """Pull/push the synced replica (no-op for a local sqlite store)."""
-        if self.synced:
+        if not self.synced:
+            return
+        if self._replica_lock_fd is not None:
+            # Lifetime lock already held (hook/CLI) — just sync.
             try:
                 self.db.sync()
             except Exception:
                 logger.exception("libSQL sync failed")
+            return
+        # Long-lived shared Memory (web UI): lock only around the network sync,
+        # the one replica-mutating call it makes after init.
+        replica = self.db_path.with_name("sync-" + self.db_path.name)
+        try:
+            timeout = float(os.environ.get("OPENLYNX_SYNC_LOCK_TIMEOUT", "30") or 30)
+        except ValueError:
+            timeout = 30.0
+        fd = _acquire_replica_lock(replica, timeout)
+        try:
+            self.db.sync()
+        except Exception:
+            logger.exception("libSQL sync failed")
+        finally:
+            _release_replica_lock(fd)
 
     def close(self) -> None:
         self.db.close()
+        _release_replica_lock(getattr(self, "_replica_lock_fd", None))
+        self._replica_lock_fd = None
 
     # ---- chroma indexing helpers (used by turns/summaries CRUD) ----
     def _index_turn_document(

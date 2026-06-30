@@ -90,6 +90,7 @@ const D: Record<string, Entry> = {
   // ── detail: memory ──
   "detail.retrievedTimes": { en: "Retrieved {n}×", zh: "被检索 {n} 次" },
   "detail.delete": { en: "Delete", zh: "删除" },
+  "detail.deleting": { en: "Deleting…", zh: "删除中…" },
   "detail.delete.confirm": { en: "Delete this memory? This cannot be undone.", zh: "确定删除这条记忆？此操作不可撤销。" },
   "detail.deleteFail": { en: "Delete failed: {e}", zh: "删除失败：{e}" },
   "summary.label": { en: "Summary", zh: "摘要" },
