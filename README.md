@@ -1,5 +1,9 @@
 # lynx-memory
 
+[![PyPI](https://img.shields.io/pypi/v/openlynx?color=2ea44f&label=pypi)](https://pypi.org/project/openlynx/)
+[![Downloads](https://img.shields.io/pepy/dt/openlynx?color=2ea44f&label=downloads)](https://pepy.tech/project/openlynx)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
+
 [中文 README](./README.zh-CN.md)
 
 Persistent, semantic, long-term memory for [Claude Code](https://claude.com/claude-code).

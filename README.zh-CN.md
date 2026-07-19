@@ -1,5 +1,9 @@
 # lynx-memory
 
+[![PyPI](https://img.shields.io/pypi/v/openlynx?color=2ea44f&label=pypi)](https://pypi.org/project/openlynx/)
+[![Downloads](https://img.shields.io/pepy/dt/openlynx?color=2ea44f&label=downloads)](https://pepy.tech/project/openlynx)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
+
 [English README](./README.md)
 
 为 [Claude Code](https://claude.com/claude-code) 提供持久、语义化的长期记忆。
