@@ -1548,6 +1548,30 @@ def cmd_worklog_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resummarize(args: argparse.Namespace) -> int:
+    from . import resummarize
+
+    what = tuple(w.strip() for w in args.what.split(",") if w.strip())
+    try:
+        report = resummarize.run(
+            what=what, jobs=args.jobs, model=args.model, force=args.force,
+            dry_run=args.dry_run, limit=args.limit, store=args.store,
+            log=lambda m: print(m, flush=True),
+        )
+    except RuntimeError as exc:
+        _print_err(str(exc))
+        return 1
+    failed = sum((r.get(k) or {}).get("failed", 0) for r in report.values() for k in ("turns", "sessions"))
+    done = sum((r.get(k) or {}).get("done", 0) for r in report.values() for k in ("turns", "sessions"))
+    if args.dry_run:
+        return 0
+    if failed:
+        _print_warn(f"{done} note(s) rewritten, {failed} failed — re-run to retry just those.")
+        return 1
+    _print_ok(f"{done} note(s) rewritten.")
+    return 0
+
+
 def cmd_schedule(args: argparse.Namespace) -> int:
     from . import schedule
 
@@ -1843,6 +1867,19 @@ def main() -> None:
     w_ex = wsub.add_parser("export", help="Re-render the Markdown/JSON files from the DB")
     w_ex.add_argument("--out", default=None, help="Output dir (default ~/.openlynx/worklog)")
     w_ex.set_defaults(func=cmd_worklog_export)
+
+    sp = sub.add_parser(
+        "resummarize",
+        help="Rewrite every stored turn/session note with the active backend (resumable)",
+    )
+    sp.add_argument("--what", default="turns,sessions", help="turns,sessions (default both)")
+    sp.add_argument("--jobs", type=int, default=16, help="Parallel LLM calls (default 16)")
+    sp.add_argument("--model", default=None, help="claude backend model (default CLAUDE_MODEL / sonnet)")
+    sp.add_argument("--force", action="store_true", help="Also redo notes already written by this backend")
+    sp.add_argument("--limit", type=int, default=None, help="At most N turns / sessions per store")
+    sp.add_argument("--store", default=None, help="Only stores whose path contains this text")
+    sp.add_argument("--dry-run", action="store_true", help="Only count what would be rewritten")
+    sp.set_defaults(func=cmd_resummarize)
 
     sp = sub.add_parser("schedule", help="Run the work journal automatically (launchd / cron)")
     sp.set_defaults(func=cmd_schedule)

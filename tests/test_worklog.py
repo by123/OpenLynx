@@ -661,3 +661,74 @@ class DiscoverStoresTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResummarizeTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self._tmp.name)
+        for p in (mock.patch("lynx_memory.config.load_env", lambda *a, **k: None),
+                  mock.patch("lynx_memory.storage._base.embed_one", return_value=FAKE_VEC)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_turn_notes_rewritten_in_one_commit_and_resumable(self):
+        from lynx_memory import resummarize
+
+        now = time.time()
+        for i in range(5):
+            _insert_turn(self.d, f"t{i}", "s1", now + i, f"q{i}", "a" * 20000 + "THE END",
+                         summary="old deepseek note")
+        seen = []
+
+        def fake_run(system, user, model=None, fast=False, timeout=None):
+            seen.append(user)
+            return "claude note", "claude-sonnet-x"
+
+        with mock.patch("lynx_memory.claude_cli.run", side_effect=fake_run), \
+                mock.patch.object(resummarize, "FLUSH_EVERY", 1000):
+            st = resummarize.rewrite_turns(self.d, provider="claude", model="sonnet", jobs=3,
+                                           force=False, limit=None, dry_run=False, log=lambda m: None)
+        self.assertEqual((st["todo"], st["done"]), (5, 5))
+        self.assertTrue(all("THE END" in u for u in seen), "reply tail must reach the model")
+        m = _memory(self.d)
+        try:
+            rows = m.db.execute("SELECT summary, summary_source, summary_model FROM turns").fetchall()
+        finally:
+            m.close()
+        self.assertTrue(all(tuple(r) == ("claude note", "claude", "claude-sonnet-x") for r in rows))
+        with mock.patch("lynx_memory.claude_cli.run", side_effect=fake_run):
+            st2 = resummarize.rewrite_turns(self.d, provider="claude", model="sonnet", jobs=3,
+                                            force=False, limit=None, dry_run=False, log=lambda m: None)
+        self.assertEqual(st2["todo"], 0)
+
+    def test_session_note_updated_in_place_and_duplicates_dropped(self):
+        from lynx_memory import resummarize
+
+        now = time.time()
+        _insert_turn(self.d, "a1", "S", now, "q1", "ans1", summary="n1")
+        _insert_turn(self.d, "a2", "S", now + 1, "q2", "ans2", summary="n2")
+        m = _memory(self.d)
+        try:
+            m.db.execute("INSERT INTO summaries(id, session_id, ts, summary, turn_count) VALUES"
+                         "('old1','S',1.0,'english summary',2),('old2','S',2.0,'dup',2)")
+            m.db.commit()
+        finally:
+            m.close()
+        state = {}
+        with mock.patch("lynx_memory.hooks.on_session_end._summarize", return_value="中文会话笔记"), \
+                mock.patch("lynx_memory.resummarize._embed_paced", side_effect=lambda t, log: [FAKE_VEC] * len(t)), \
+                mock.patch("lynx_memory.resummarize._save_done_sessions"):
+            st = resummarize.rewrite_sessions(self.d, jobs=2, force=False, limit=None, dry_run=False,
+                                              done_state=state, log=lambda m: None)
+        self.assertEqual(st["done"], 1)
+        m = _memory(self.d)
+        try:
+            live = m.db.execute("SELECT id, summary FROM summaries WHERE deleted_at IS NULL").fetchall()
+        finally:
+            m.close()
+        self.assertEqual([tuple(r) for r in live], [("old2", "中文会话笔记")])
+        self.assertIn("S", state[str(self.d.resolve())])

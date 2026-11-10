@@ -140,7 +140,12 @@ _LAST_ERROR = ""
 
 
 def _conversation_body(user_msg: str, assistant_msg: str) -> str:
-    return f"User:\n{user_msg[:6000]}\n\n---\n\nAssistant:\n{assistant_msg[:10000]}"
+    # Keep the END of long replies: that is where the outcome is. Head-only
+    # truncation used to drop exactly the conclusion of long turns.
+    a = assistant_msg or ""
+    if len(a) > 10000:
+        a = a[:3000] + "\n[…]\n" + a[-7000:]
+    return f"User:\n{user_msg[:6000]}\n\n---\n\nAssistant:\n{a}"
 
 
 def _log_failure(provider: str, exc: BaseException) -> None:

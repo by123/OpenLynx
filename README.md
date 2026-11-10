@@ -114,6 +114,7 @@ because both write to the same SQLite + Chroma store at `~/.openlynx/`.
 | `lynx-memory status`     | Show data dir, hook registration, DB stats, and the active goal.                          |
 | `lynx-memory goal`       | View/set/clear the per-scope goal (`goal show \| set "…" \| clear`, with `--scope`).      |
 | `lynx-memory worklog`    | Work journal: `backfill` (all history), `run` (last 14 days, default for the scheduler), `status`, `show [--day D \| --project P]`, `export`. See [Work journal](#work-journal). |
+| `lynx-memory resummarize` | Rewrite every stored turn note and session note with the active backend (e.g. move an older history onto Claude): `--jobs N` parallel calls, resumable (already-rewritten notes are skipped), `--what turns,sessions`, `--dry-run`. |
 | `lynx-memory schedule`   | Run the journal automatically: `install [--at HH:MM …]` (default 20:30 + 08:30), `uninstall`, `status`, `run-now` — launchd on macOS, cron on Linux. |
 | `lynx-memory daily`      | Summarize a project's turns for today, optionally push to your phone (`--notify`, `--all`, `--project`, `--since-hours`). |
 | `lynx-memory doctor`     | Verify Python, deps, API key, and `settings.json`.                                        |
@@ -197,6 +198,7 @@ echo "SUMMARY_BACKEND=claude" >> ~/.openlynx/.env   # use Claude Code headless
 lynx-memory worklog backfill --dry-run   # units / LLM calls it would make
 lynx-memory worklog backfill --jobs 5    # summarize ALL history (resumable)
 lynx-memory schedule install             # then 20:30 + 08:30 every day
+lynx-memory resummarize --jobs 24        # optional: rewrite every old turn/session note with Claude
 
 lynx-memory worklog status               # coverage, backend, schedule
 lynx-memory worklog show                 # today's log
@@ -531,6 +533,7 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 
 Full history on [GitHub Releases](https://github.com/by123/OpenLynx/releases).
 
+- **0.8.1** — `lynx-memory resummarize`: rewrite every stored turn note and session note with the active backend (parallel, resumable, batched single-commit writes; session notes updated in place, duplicates dropped, vectors re-embedded with rate-limit pacing). Turn notes now keep the end of long replies.
 - **0.8.0** — **Work journal** (`lynx-memory worklog`): every store's history summarized by Claude into project × day units (work items with honest status, reusable facts, evidence) and rolling project cards; `backfill` for all history, fingerprint-based incremental runs, resumable staging, single-transaction writes; Markdown/JSON exports; **Work log** tab in the Web UI; project brief injected on a session's first prompt. **`claude` summarization backend** (headless `claude -p`, opt-in) for turn notes, session notes and the goal judge (deferred to the background worker). **`lynx-memory schedule`** installs the nightly job (launchd / cron) with automatic catch-up. Reliability: background workers no longer hold the store's replica lock during LLM calls; `lynx-memory sync reconcile` (and every journal run) merges rows stranded in the local fallback DB back into synced replicas; store discovery recognizes replica-only stores. Quality: harness noise (CLAUDE.md reminders, skill bodies, task notifications) is stripped before summarizing and no longer triggers recall; new typed note format (`[decision]`, `[pitfall]`, `[todo]` …); one session note per session, written from each reply's conclusion rather than its head.
 - **0.7.2** — Cross-process lock for the libSQL replica; set-based batch operations.
 - **0.7.1** — Soft-delete for turns and summaries, propagated through sync.
