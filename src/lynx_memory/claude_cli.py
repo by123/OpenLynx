@@ -146,15 +146,22 @@ def run(
     model = model or model_for(fast)
     cmd = build_command(system, model)
     try:
-        proc = subprocess.run(
-            cmd,
-            input=user,
-            capture_output=True,
-            text=True,
-            timeout=_timeout(timeout),
-            cwd=tempfile.gettempdir(),
-            env=child_env(),
-        )
+        # Feed the prompt from a file, not a pipe: `claude -p` gives up on
+        # stdin after ~3s, and under heavy parallel load a pipe writer thread
+        # can be scheduled too late ("no stdin data received in 3s").
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as fin:
+            fin.write(user)
+            fin.flush()
+            fin.seek(0)
+            proc = subprocess.run(
+                cmd,
+                stdin=fin,
+                capture_output=True,
+                text=True,
+                timeout=_timeout(timeout),
+                cwd=tempfile.gettempdir(),
+                env=child_env(),
+            )
     except subprocess.TimeoutExpired:
         _fail(f"timeout after {_timeout(timeout):.0f}s (model={model})")
         return None

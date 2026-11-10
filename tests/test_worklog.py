@@ -1,4 +1,7 @@
-import _hermetic  # noqa: F401  (must precede lynx_memory imports)
+try:
+    import _hermetic  # noqa: F401  (must precede lynx_memory imports)
+except ModuleNotFoundError:  # run as `python -m unittest tests.test_x`
+    from . import _hermetic  # noqa: F401
 import json
 import os
 import sqlite3
@@ -505,7 +508,7 @@ class ClaudeCliTest(unittest.TestCase):
         with mock.patch.object(claude_cli, "claude_bin", return_value="/bin/claude"), \
                 mock.patch("subprocess.run", return_value=self._proc(0, ok)) as run:
             self.assertEqual(claude_cli.run("s", "u", fast=True), ("note", "claude-haiku-x"))
-            self.assertEqual(run.call_args.kwargs["input"], "u")
+            self.assertNotIn("input", run.call_args.kwargs)  # prompt goes in via a file
         bad = {"result": "rate limited", "is_error": True}
         with mock.patch.object(claude_cli, "claude_bin", return_value="/bin/claude"), \
                 mock.patch("subprocess.run", return_value=self._proc(1, bad)):

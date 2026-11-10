@@ -1,4 +1,7 @@
-import _hermetic  # noqa: F401  (must precede lynx_memory imports)
+try:
+    import _hermetic  # noqa: F401  (must precede lynx_memory imports)
+except ModuleNotFoundError:  # run as `python -m unittest tests.test_x`
+    from . import _hermetic  # noqa: F401
 import tempfile
 import unittest
 from pathlib import Path
