@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 import importlib
 import os
 import sys
@@ -5,6 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+
+def _without_dir_override(fn):
+    """Run fn with LYNX_MEMORY_DIR unset (the hermetic test env sets it, and
+    the legacy migration deliberately skips custom data dirs)."""
+    with mock.patch.dict(os.environ):
+        os.environ.pop("LYNX_MEMORY_DIR", None)
+        return fn()
 
 
 class OpenLynxHomeTest(unittest.TestCase):
@@ -59,7 +68,7 @@ class OpenLynxHomeTest(unittest.TestCase):
                 mock.patch.object(cli, "ENV_FILE", home / ".env"),
                 mock.patch.object(cli, "LEGACY_GLOBAL_DATA_DIR", legacy),
             ):
-                changed = cli._migrate_legacy_global_store()
+                changed = _without_dir_override(cli._migrate_legacy_global_store)
 
             self.assertTrue(changed)
             self.assertFalse(legacy.exists())
@@ -83,7 +92,7 @@ class OpenLynxHomeTest(unittest.TestCase):
                 mock.patch.object(cli, "ENV_FILE", home / ".env"),
                 mock.patch.object(cli, "LEGACY_GLOBAL_DATA_DIR", legacy),
             ):
-                changed = cli._migrate_legacy_global_store()
+                changed = _without_dir_override(cli._migrate_legacy_global_store)
 
             self.assertFalse(changed)
             self.assertTrue(legacy.exists())

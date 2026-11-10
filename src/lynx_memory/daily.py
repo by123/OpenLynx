@@ -96,7 +96,11 @@ def discover_stores(roots: Optional[List[Path]] = None, max_depth: int = 6) -> L
     found: List[Path] = []
     seen = set()
 
-    if (GLOBAL_DATA_DIR / "db" / "memory.db").exists():
+    def _has_db(d: Path) -> bool:
+        # a synced store may only have its libSQL replica (sync-memory.db)
+        return (d / "db" / "memory.db").exists() or (d / "db" / "sync-memory.db").exists()
+
+    if _has_db(GLOBAL_DATA_DIR):
         found.append(GLOBAL_DATA_DIR)
         seen.add(GLOBAL_DATA_DIR.resolve())
 
@@ -115,7 +119,7 @@ def discover_stores(roots: Optional[List[Path]] = None, max_depth: int = 6) -> L
         for dirpath, dirnames, _files in os.walk(root, onerror=lambda e: None):
             if PROJECT_MARKER in dirnames:
                 cand = Path(dirpath) / PROJECT_MARKER
-                if (cand / "db" / "memory.db").exists():
+                if _has_db(cand):
                     rp = cand.resolve()
                     if rp not in seen:
                         seen.add(rp)

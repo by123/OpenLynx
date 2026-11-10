@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 import os
 import tempfile
 import unittest
@@ -61,13 +62,12 @@ class SummaryBackendTest(unittest.TestCase):
             {"SUMMARY_BACKEND": "openai", "OPENAI_API_KEY": "sk-test"},
             clear=True,
         ), mock.patch.object(
-            on_session_end, "_summarize_via_openai", return_value="session summary"
-        ) as openai_call, mock.patch.object(
-            on_session_end, "_summarize_via_deepseek", return_value=""
-        ) as deepseek_call:
+            summarizer, "_chat", return_value="session summary"
+        ) as chat:
             self.assertEqual(on_session_end._summarize("conversation"), "session summary")
-            openai_call.assert_called_once_with("conversation", goal=None)
-            deepseek_call.assert_not_called()
+            chat.assert_called_once()
+            self.assertEqual(chat.call_args.args[0], "openai")
+            self.assertIn("conversation", chat.call_args.args[2])
 
     def test_turn_summary_deepseek_backend_uses_deepseek_key(self):
         with mock.patch.dict(
@@ -161,13 +161,11 @@ class SummaryBackendTest(unittest.TestCase):
             {"SUMMARY_BACKEND": "qwen", "QWEN_API_KEY": "sk-test"},
             clear=True,
         ), mock.patch.object(
-            on_session_end, "_summarize_via_qwen", return_value="session summary"
-        ) as qwen_call, mock.patch.object(
-            on_session_end, "_summarize_via_openai", return_value=""
-        ) as openai_call:
+            summarizer, "_chat", return_value="session summary"
+        ) as chat:
             self.assertEqual(on_session_end._summarize("conversation"), "session summary")
-            qwen_call.assert_called_once_with("conversation", goal=None)
-            openai_call.assert_not_called()
+            chat.assert_called_once()
+            self.assertEqual(chat.call_args.args[0], "qwen")
 
     def test_store_env_overrides_inherited_environment(self):
         with tempfile.TemporaryDirectory() as td:

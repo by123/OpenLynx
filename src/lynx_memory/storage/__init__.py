@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-from ._base import _MemoryBase, TAG_KIND_WEIGHTS, SCHEMA
+from ._base import _MemoryBase, TAG_KIND_WEIGHTS, SCHEMA, SyncUnavailable
 from ._crud import _CrudMixin
 from ._retrievals import _RetrievalsMixin
 from ._scoped_search import search_scoped
@@ -85,4 +85,5 @@ __all__ = [
     "memory_lock",
     "TAG_KIND_WEIGHTS",
     "SCHEMA",
+    "SyncUnavailable",
 ]

@@ -27,15 +27,19 @@ Three Claude Code [hooks](https://docs.claude.com/en/docs/claude-code/hooks) plu
 | Hook               | What it does                                                                                |
 | ------------------ | ------------------------------------------------------------------------------------------- |
 | `UserPromptSubmit` | Embeds your prompt and injects the top-K most similar prior turns (a turn's **summary** is injected instead of raw prose when one exists). |
-| `Stop`             | Persists the current turn into SQLite + Chroma, then spawns a detached summarizer that calls the configured API (OpenAI / DeepSeek / Qwen) to extract long-term memories. |
-| `SessionEnd`       | Calls the configured API to produce a coarse memory summary of the whole session.           |
+| `Stop`             | Persists the current turn into SQLite + Chroma, then spawns a detached summarizer (Claude via `claude -p`, or OpenAI / DeepSeek / Qwen) that writes the turn's memory note. |
+| `SessionEnd`       | Detaches a worker that writes one session note (outcome, decisions, pitfalls, open loops) — replacing any earlier note for that session. |
+
+On top of that, the **[work journal](#work-journal)** (`lynx-memory worklog`)
+rolls everything up into per-project, per-day records of what actually got
+done, plus a living card per project — built nightly by a scheduled job.
 
 Storage:
 
 - **SQLite** — source of truth for raw turns, per-turn summaries, and session summaries.
 - **Chroma** — local vector index over turns + summaries.
 - **Voyage AI** (`voyage-3.5`) — embeddings.
-- **OpenAI** (`gpt-4o-mini`, default), **DeepSeek** (`deepseek-chat`), or **Qwen** (`qwen-turbo`) — per-turn and session summarization. Any one of `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `QWEN_API_KEY` is enough.
+- **Claude** via headless Claude Code (`claude -p`, opt in with `SUMMARY_BACKEND=claude` — uses your own Claude login, no API key), or **OpenAI** (`gpt-4o-mini`), **DeepSeek** (`deepseek-chat`), **Qwen** (`qwen-turbo`) — summarization. Any one of these is enough.
 - **Turso / libSQL** (optional, off by default) — when [cloud sync](#cloud-sync) is on, SQLite rows and vectors replicate to your own remote database for cross-machine recall.
 
 ## Install
@@ -109,10 +113,12 @@ because both write to the same SQLite + Chroma store at `~/.openlynx/`.
 | `lynx-memory init-project` | Create a `.lynx-memory/` marker in cwd to enable project-level storage (`--goal "…"`).  |
 | `lynx-memory status`     | Show data dir, hook registration, DB stats, and the active goal.                          |
 | `lynx-memory goal`       | View/set/clear the per-scope goal (`goal show \| set "…" \| clear`, with `--scope`).      |
+| `lynx-memory worklog`    | Work journal: `backfill` (all history), `run` (last 14 days, default for the scheduler), `status`, `show [--day D \| --project P]`, `export`. See [Work journal](#work-journal). |
+| `lynx-memory schedule`   | Run the journal automatically: `install [--at HH:MM …]` (default 20:30 + 08:30), `uninstall`, `status`, `run-now` — launchd on macOS, cron on Linux. |
 | `lynx-memory daily`      | Summarize a project's turns for today, optionally push to your phone (`--notify`, `--all`, `--project`, `--since-hours`). |
 | `lynx-memory doctor`     | Verify Python, deps, API key, and `settings.json`.                                        |
 | `lynx-memory merge`      | Merge memory between the project and global stores (`--from` / `--to`, with `--dry-run`). |
-| `lynx-memory sync`       | Sync memory to the cloud via Turso (`init` / `init --all` / `status`). See [Cloud sync](#cloud-sync). |
+| `lynx-memory sync`       | Sync memory to the cloud via Turso (`init` / `init --all` / `status` / `reconcile`). See [Cloud sync](#cloud-sync). |
 | `lynx-memory delete`     | Permanently delete memory for a scope (`--scope project\|global\|both`, double confirm).  |
 | `lynx-memory uninstall`  | Remove hooks, slash commands, and skill links (keeps your data).                          |
 
@@ -149,7 +155,100 @@ affects which future turns are kept. Tunables (`.env`):
 | `GOAL_STRICTNESS`     | `strict` | `loose` \| `balanced` \| `strict`                |
 | `GOAL_JUDGE_TIMEOUT`  | `8`      | Seconds for the relevance LLM call (`0` = none)  |
 
+## Work journal
+
+Raw memory answers *"what did we say?"*. The work journal answers *"what did I
+ship, decide, learn — and what is still open?"* — for every project, every day.
+`lynx-memory worklog` reads all stores on the machine and has Claude (headless
+`claude -p`) write it, layer on layer:
+
+```text
+turns (+ per-turn notes)
+  └─► unit = one project × one day ──────────────► project card (rolling)
+        work items  status: done │ done-unverified │      summary · state · open loops
+                    uncommitted │ blocked:<who> │         decisions in force · pitfalls
+                    discussed-only │ abandoned            definitions · metrics · milestones
+        facts       pitfalls · definitions · findings
+                    · preferences   (+ evidence turn ids)
+```
+
+What to keep, and how, was settled by a multi-agent review of real memory
+(knowledge-value, pipeline and consumer perspectives):
+
+- **Honest status** — a plan is not *done*; edited-but-untested is
+  `done-unverified`; not committed is `uncommitted`; waiting on someone is
+  `blocked:<who>`.
+- **Anchors or it didn't happen** — every item cites a file, commit, version,
+  number or table; vague "improved X" lines are dropped.
+- **Decisions keep the why** and the rejected alternative; a plan reversed
+  during the day is recorded once, in its final state. Rework is counted.
+- **Two streams** — *progress* (for reviews) and reusable *facts* (pitfalls,
+  metric definitions, findings with their scope — for "how did I fix X?").
+- **Noise never reaches the model** — CLAUDE.md reminders, skill bodies and
+  subagent notifications are stripped; templated batch jobs recorded as memory
+  (e.g. `claude -p` pipelines) are detected and only counted. Secrets are
+  redacted.
+
+### Build it once, then let it run
+
+```bash
+echo "SUMMARY_BACKEND=claude" >> ~/.openlynx/.env   # use Claude Code headless
+
+lynx-memory worklog backfill --dry-run   # units / LLM calls it would make
+lynx-memory worklog backfill --jobs 5    # summarize ALL history (resumable)
+lynx-memory schedule install             # then 20:30 + 08:30 every day
+
+lynx-memory worklog status               # coverage, backend, schedule
+lynx-memory worklog show                 # today's log
+lynx-memory worklog show --project app   # a project card
+```
+
+Every unit carries a fingerprint of its input, so a run only rebuilds what
+changed: the nightly run is cheap, a re-run is free, and nights the machine was
+asleep or off are caught up automatically (the scheduled run covers the last 14
+days). Units build in parallel; a crashed run resumes from
+`~/.openlynx/worklog/.staging.jsonl`. Results are written to the global store
+(`worklog_units`, `work_items`, `project_cards`) in **one transaction** and
+rendered to plain files — a stable interface for people and other agents:
+
+```text
+~/.openlynx/worklog/
+  days/YYYY-MM-DD.md     per-day log, grouped by project
+  projects/<name>.md     project cards (+ <name>.json)
+  open-loops.md          every open loop, across projects
+  latest.md · index.json
+```
+
+**Where it shows up**
+
+- **Web UI → Work log**: browse days, project cards and open loops, and search
+  work items / facts.
+- **New sessions** get their project's card once, on the first prompt, as a
+  `<project-brief>` (≈1.4k chars max, flagged as possibly outdated). Turn off
+  with `WORKLOG_INJECT_BRIEF=0`.
+
+**Projects.** A project store owns its turns. In the global store the working
+directory decides — a directory inside a project that has its own store maps to
+that project; temp dirs, `~` and `~/Desktop` are buckets, not projects. Skip
+paths with `WORKLOG_EXCLUDE="*/scratch*,*/private"`.
+
+**The `claude` backend.** Each call is an isolated `claude -p` (no tools, no MCP
+servers, hooks disabled, `LYNX_MEMORY_NO_HOOK=1`, no session file), so a
+summary never records itself as memory. Models: `CLAUDE_MODEL` (default
+`sonnet`) for journal units, cards and session notes; `CLAUDE_FAST_MODEL`
+(default `haiku`) for per-turn notes and the goal judge. With this backend the
+goal judge runs in the background worker (the turn is stored first and
+soft-deleted if judged irrelevant), keeping the `Stop` hook fast. `claude` is
+never picked by `SUMMARY_BACKEND=auto` — it spends your Claude plan, so it is
+opt-in. For scheduled runs, `claude setup-token` once and put
+`CLAUDE_CODE_OAUTH_TOKEN=…` in `~/.openlynx/.env`; launchd jobs can't refresh a
+keychain login reliably.
+
 ## Daily digest
+
+> The [work journal](#work-journal) is the durable, structured successor: it is
+> stored, covers every project, and is what the scheduler builds. `daily`
+> remains for quick ad-hoc recaps and phone pushes.
 
 `lynx-memory daily` summarizes a project's turns for the day (since local
 midnight, or `--since-hours N`) into a short "what I did today" recap — reusing
@@ -214,7 +313,7 @@ a local FastAPI + React UI on `127.0.0.1`. The page opens automatically in your
 browser and lets you:
 
 - Browse memory as a **card gallery**; click any card to open its full content, summary, tags and retrieval history in a side **drawer**.
-- Switch lens between **Memory** (stored turns) and **Retrievals** (when a memory was recalled by a later prompt).
+- Switch lens between **Memory** (stored turns), **Retrievals** (when a memory was recalled by a later prompt) and **Work log** (the [work journal](#work-journal): per-day logs, project cards, open loops, and search over work items and facts).
 - Switch between **project** and **global** scopes.
 - Search by **keyword** (SQL `LIKE`) or **semantic** similarity (Voyage embeddings), **filter by date**, filter by **tag**, or sort by **most-retrieved**.
 - Tag turns (e.g. `#work`, `#personal`) and delete a single turn (also clears its embedding from Chroma).
@@ -301,6 +400,12 @@ The **global** store syncs separately through the `OPENLYNX_SYNC_*` env vars
 flips `OPENLYNX_SYNC_ENABLED`). Both relational rows and vector embeddings are
 synced, so semantic search works across machines without re-embedding.
 
+If a hook can't get the replica's lock in time (or the remote is unreachable),
+it writes the turn to the plain local `db/memory.db` rather than lose it.
+`lynx-memory sync reconcile [--dry-run]` merges those stranded rows back into
+the synced replica (newer copies of the same turn win; rows older than the
+replica are never resurrected), and every `worklog` run does it automatically.
+
 ## Configuration
 
 All optional, set in `~/.openlynx/.env`:
@@ -311,7 +416,16 @@ All optional, set in `~/.openlynx/.env`:
 | `TOP_K`           | `5`                           | Max memories injected per prompt                   |
 | `MIN_SCORE`       | `0.7`                         | Cosine similarity floor (0–1)                      |
 | `SUMMARY_ENABLED` | `1`                           | Set `0`/`false` to disable per-turn summarization  |
-| `SUMMARY_BACKEND` | `auto`                        | `auto` → first provider with a key (OpenAI → DeepSeek → Qwen); force with `openai`, `deepseek`, or `qwen` |
+| `SUMMARY_BACKEND` | `auto`                        | `auto` → first provider with a key (OpenAI → DeepSeek → Qwen); force with `claude`, `openai`, `deepseek`, or `qwen`. A forced backend never falls back to another. |
+| `CLAUDE_MODEL`    | `sonnet`                      | `claude` backend: journal units, project cards, session notes |
+| `CLAUDE_FAST_MODEL` | `haiku`                     | `claude` backend: per-turn notes and the goal judge |
+| `CLAUDE_BIN`      | `claude` on `PATH`            | Path to the Claude Code CLI                         |
+| `CLAUDE_TIMEOUT`  | `300`                         | Seconds per `claude -p` call                        |
+| `CLAUDE_CODE_OAUTH_TOKEN` | —                     | Long-lived token from `claude setup-token`, for scheduled (launchd/cron) runs |
+| `WORKLOG_DIR`     | `~/.openlynx/worklog`         | Where the journal is exported                      |
+| `WORKLOG_EXCLUDE` | —                             | Comma-separated globs of project paths to leave out |
+| `WORKLOG_INJECT_BRIEF` | `1`                      | Inject the project card on a session's first prompt |
+| `WORKLOG_LANG`    | auto                          | `zh` / `en` labels in the exported Markdown         |
 | `OPENAI_API_KEY`  | —                             | Required when `SUMMARY_BACKEND=openai`             |
 | `OPENAI_MODEL`    | `gpt-4o-mini`                 | OpenAI model used for summarization                |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1`   | Override for OpenAI-compatible endpoints           |
@@ -330,7 +444,7 @@ All optional, set in `~/.openlynx/.env`:
 | `OPENLYNX_SYNC_ENABLED` | `0`                     | Set `1` to sync the global store                   |
 | `OPENLYNX_SYNC_INTERVAL` | `60`                   | Min seconds between background replica syncs        |
 
-See [Cloud sync](#cloud-sync), [Goals](#goals) and [Daily digest](#daily-digest) for more on these env vars.
+See [Cloud sync](#cloud-sync), [Goals](#goals), [Work journal](#work-journal) and [Daily digest](#daily-digest) for more on these env vars.
 
 ## Optional: MCP server
 
@@ -385,6 +499,10 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 
 - [x] **Goals & daily digest** — set a per-scope goal to gate storage and focus summaries; `lynx-memory daily` recaps your day (per project or `--all`) and can push it to your phone.
 
+- [x] **Work journal** — Claude-written, per-project/per-day records with honest status, reusable facts and rolling project cards; full-history backfill, scheduled catch-up, Web UI tab, and session-start project briefs. See [Work journal](#work-journal).
+
+- [ ] **Weekly / monthly reviews** — roll the day units up into week and month summaries.
+
 - [ ] **Other CLIs (Cursor, Gemini CLI, …)** — not integrated yet. **Cursor**: blocked until a stable hooks surface ships (we plan to adopt it once available); meanwhile MCP-only workflows remain possible where applicable.
 
 - [ ] **Unified multi-client installer**
@@ -412,6 +530,11 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 ## Changelog
 
 Full history on [GitHub Releases](https://github.com/by123/OpenLynx/releases).
+
+- **0.8.0** — **Work journal** (`lynx-memory worklog`): every store's history summarized by Claude into project × day units (work items with honest status, reusable facts, evidence) and rolling project cards; `backfill` for all history, fingerprint-based incremental runs, resumable staging, single-transaction writes; Markdown/JSON exports; **Work log** tab in the Web UI; project brief injected on a session's first prompt. **`claude` summarization backend** (headless `claude -p`, opt-in) for turn notes, session notes and the goal judge (deferred to the background worker). **`lynx-memory schedule`** installs the nightly job (launchd / cron) with automatic catch-up. Reliability: background workers no longer hold the store's replica lock during LLM calls; `lynx-memory sync reconcile` (and every journal run) merges rows stranded in the local fallback DB back into synced replicas; store discovery recognizes replica-only stores. Quality: harness noise (CLAUDE.md reminders, skill bodies, task notifications) is stripped before summarizing and no longer triggers recall; new typed note format (`[decision]`, `[pitfall]`, `[todo]` …); one session note per session, written from each reply's conclusion rather than its head.
+- **0.7.2** — Cross-process lock for the libSQL replica; set-based batch operations.
+- **0.7.1** — Soft-delete for turns and summaries, propagated through sync.
+- **0.7.0** — Web UI: one tab per project, bulk delete, project visibility.
 
 - **0.6.0** — **Cloud sync** via Turso (libSQL) embedded replicas: `lynx-memory sync init` provisions a per-project database (keyed off the git remote for stable cross-machine recall), `--all` syncs every store, and both rows and vector embeddings are uploaded. The Web UI ⚙ Settings panel is reorganized into a **left-hand menu**, with a **Cloud sync (Turso)** section that splits global-store sync from project-database provisioning.
 - **0.5.0** — Redesigned web UI: full-width card gallery + side detail drawer, warm theme. Interface internationalized (**English by default**, one-click **中文**). Date filter on the memory list (`/api/turns` gains `since` / `until`).

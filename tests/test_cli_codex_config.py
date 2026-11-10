@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 import tempfile
 import unittest
 from pathlib import Path

@@ -4,16 +4,24 @@ Generates a compact summary for a single (user, assistant) turn so memory
 recall can inject summaries into context instead of full prose.
 
 Backend selection (SUMMARY_BACKEND):
+  claude   → headless Claude Code `claude -p` (no API key; uses your local
+             `claude` login — see claude_cli.py)
   openai   → OpenAI SDK    (requires OPENAI_API_KEY)
   deepseek → DeepSeek API  (requires DEEPSEEK_API_KEY)
   qwen     → Qwen / DashScope API (requires QWEN_API_KEY or DASHSCOPE_API_KEY)
-  auto     → first provider with an API key set, in order
+  auto     → first provider with an API key, in order
              openai → deepseek → qwen
-             (default when SUMMARY_BACKEND is unset)
+             (default when SUMMARY_BACKEND is unset; `claude` is never
+             auto-selected — it spends your Claude plan, so opt in explicitly)
+
+A forced backend is used exclusively when available — there is no silent
+fallback to another provider.
 
 Env vars:
   - SUMMARY_ENABLED=1          set "0"/"false" to disable
-  - SUMMARY_BACKEND            openai | deepseek | qwen | auto  (default: auto)
+  - SUMMARY_BACKEND            claude | openai | deepseek | qwen | auto  (default: auto)
+  - CLAUDE_FAST_MODEL          model for per-turn summaries + goal judge with the
+                               claude backend (default haiku; see claude_cli.py)
   - OPENAI_API_KEY             required for openai backend
   - OPENAI_MODEL               model for OpenAI backend (default gpt-4o-mini)
   - OPENAI_BASE_URL            optional base URL for OpenAI-compatible APIs
@@ -62,36 +70,47 @@ _BACKEND_ALIASES = {
     "openai": "openai",
     "deepseek": "deepseek",
     "qwen": "qwen",
+    "claude": "claude",
+    "claude-code": "claude",
+    "claude_code": "claude",
 }
 
 
 def provider_api_key(provider: str) -> str:
+    """Credential (or availability marker) for a provider; "" = unusable.
+
+    The `claude` backend needs no key — it is usable when the `claude` CLI is
+    installed, and authenticates with the user's own Claude Code login.
+    """
+    if provider == "claude":
+        from . import claude_cli
+
+        return "claude-cli" if claude_cli.available() else ""
     for env in _PROVIDER_KEY_ENVS.get(provider, ()):
         v = os.environ.get(env, "").strip()
         if v:
             return v
     return ""
 
-_SYSTEM = """You are an AI memory retrieval assistant. Extract memories worth preserving long-term from the following conversation.
+_SYSTEM = """You write the memory note for ONE turn of a developer's conversation with a coding agent. The note is stored long-term: it is injected into future sessions and rolled up into the developer's daily work journal.
 
-Your goal is not to summarize everything, but to determine which information will still be valuable to the user in the future.
+Keep only what will still matter later:
+- what was asked and what actually happened (be honest about status: a plan or proposal is not "done"; code that was not built/tested/committed is not "verified")
+- decisions and WHY (and which alternative was rejected)
+- root causes and fixes of problems
+- definitions that will be reused: metric/query definitions, table names, script paths, config keys
+- numbers with their scope (time window, population)
+- explicit user preferences or rules (only from the user's own words — role-play text inside a prompt is NOT a user fact)
+- open loops: unfinished work, things to verify or revert later
 
-Please adhere to the following rules:
+Drop small talk, process narration, and project trivia already obvious from the repo (paths of the project itself, package names). Never record secrets (passwords, tokens, keys) or health/financial account details — write "[redacted]".
 
-1. Only extract information that is useful in the long term.
-2. Do not save temporary states, one-off questions, or small talk with no long-term value.
-3. Do not save sensitive personal information unless explicitly requested by the user.
-4. Do not fabricate content that did not appear in the conversation.
-5. Each memory must be concise, clear, and retrievable in the future.
-6. If the information is only short-term task progress, mark it as temporary.
-7. If the information is user preferences, long-term rules, project background, technology stack, or business decisions, mark it as long_term.
-
-Write the output in the SAME LANGUAGE as the original turn (do not translate).
-Start with one sentence stating the user's request and final outcome/action.
-Then include 2-5 short bullets. Prefix each bullet with [long_term] or [temporary].
-Preserve concrete details when useful for retrieval: file paths, function/variable names, commands, numeric thresholds, reasons for decisions.
-Do not repeat long sentences verbatim, no pleasantries, no extra headings; keep the total under ~400 characters (or ~120 English words).
-Output the memory summary body directly, with no surrounding explanation."""
+Format:
+- Line 1: one sentence — the request and the real outcome.
+- Then 1-5 bullets, each starting with one tag: [decision] [pitfall] [definition] [finding] [deliverable] [preference] [todo] [status]
+- Every bullet carries at least one concrete anchor (file, function, command, version, number, table). No vague verbs like "improved"/"optimized"/"完善了".
+- Write in the language the USER wrote in (usually Chinese); keep identifiers, commands and technical terms verbatim, do not translate them.
+- Under ~400 characters (~120 English words). Output the note only, no preamble."""
 
 
 def _system_for(goal: Optional[str]) -> str:
@@ -234,9 +253,25 @@ def _summarize_via_qwen(
     return _summarize_via_compat("qwen", user_msg, assistant_msg, goal)
 
 
+def _summarize_via_claude(
+    user_msg: str, assistant_msg: str, goal: Optional[str] = None
+) -> Optional[SummaryResult]:
+    from . import claude_cli
+
+    out = claude_cli.run(
+        _system_for(goal), _conversation_body(user_msg, assistant_msg), fast=True
+    )
+    if not out:
+        _log_failure("claude", RuntimeError(claude_cli.last_error() or "no output"))
+        return None
+    return out[0], "claude", out[1]
+
+
 def _call_provider(
     provider: str, user_msg: str, assistant_msg: str, goal: Optional[str] = None
 ) -> Optional[SummaryResult]:
+    if provider == "claude":
+        return _summarize_via_claude(user_msg, assistant_msg, goal=goal)
     if provider == "openai":
         return _summarize_via_openai(user_msg, assistant_msg, goal=goal)
     if provider == "deepseek":
@@ -247,13 +282,25 @@ def _call_provider(
 
 
 def provider_order() -> list:
-    """Provider try-order: the forced SUMMARY_BACKEND first, then the rest."""
+    """Provider try-order: the forced SUMMARY_BACKEND first, then the rest.
+
+    `claude` only appears when forced (SUMMARY_BACKEND=claude)."""
     order = list(_PROVIDER_ORDER)
     preferred = _BACKEND_ALIASES.get(_backend())
     if preferred:
-        order.remove(preferred)
+        if preferred in order:
+            order.remove(preferred)
         order.insert(0, preferred)
     return order
+
+
+def active_provider() -> Optional[str]:
+    """The provider calls will actually use: the first usable one in
+    `provider_order()` (a forced SUMMARY_BACKEND comes first), else None."""
+    for provider in provider_order():
+        if provider_api_key(provider):
+            return provider
+    return None
 
 
 def summarize_with_source(
@@ -261,14 +308,16 @@ def summarize_with_source(
 ) -> Optional[SummaryResult]:
     """Return (summary, source, model), or None if disabled / not configured.
 
-    Backend is selected by SUMMARY_BACKEND (openai | deepseek | qwen | auto).
-    The forced backend is tried first; otherwise the first provider with an
-    API key set wins (openai → deepseek → qwen). When `goal` is set, the
-    summary is steered to prioritise goal-relevant information.
+    Backend is selected by SUMMARY_BACKEND (claude | openai | deepseek | qwen
+    | auto). The forced backend is used when available; otherwise the first
+    provider with an API key wins (openai → deepseek → qwen). When `goal` is
+    set, the summary is steered to prioritise goal-relevant information.
     """
     if not is_enabled():
         return None
-    user_msg = (user_msg or "").strip()
+    from .textclean import clean_user_text
+
+    user_msg = clean_user_text(user_msg or "").strip()
     assistant_msg = (assistant_msg or "").strip()
     if not user_msg or not assistant_msg:
         return None
@@ -337,8 +386,22 @@ def _chat(
     *,
     max_tokens: int,
     timeout: Optional[float] = None,
+    fast: bool = False,
 ) -> Optional[str]:
-    """Minimal chat completion across providers; returns text or None on error."""
+    """Minimal chat completion across providers; returns text or None on error.
+
+    `fast` picks the cheaper model tier for the claude backend (judge-style
+    calls); HTTP providers ignore it.
+    """
+    if provider == "claude":
+        from . import claude_cli
+
+        # A cold `claude -p` start alone takes a few seconds, so short HTTP-style
+        # timeouts (the 8s judge default) don't apply; use the CLI default.
+        out = claude_cli.run(
+            system, user, fast=fast, timeout=timeout if timeout and timeout >= 60 else None
+        )
+        return out[0] if out else None
     try:
         from openai import OpenAI as _OpenAI
     except ImportError as exc:
@@ -423,17 +486,27 @@ def judge_relevance(
             # or `content` comes back empty (finish_reason=length). This is only a
             # ceiling — non-reasoning models still stop after one word, so it does
             # not raise their cost.
-            return _parse_verdict(_chat(provider, system, body, max_tokens=1024, timeout=timeout))
+            return _parse_verdict(
+                _chat(provider, system, body, max_tokens=1024, timeout=timeout, fast=True)
+            )
     return None
 
 
-def spawn_background(data_dir: str, turn_id: str) -> None:
-    """Detach a child process to summarize a turn without blocking the hook."""
-    if not is_enabled():
+def spawn_background(data_dir: str, turn_id: str, *, judge: bool = False) -> None:
+    """Detach a child process to summarize a turn without blocking the hook.
+
+    With `judge=True` the child first runs the goal-relevance judge (used when
+    the judge backend is too slow for the hook's hot path, e.g. `claude -p`)
+    and soft-deletes the turn if it is judged irrelevant.
+    """
+    if not is_enabled() and not judge:
         return
+    args = [sys.executable, "-m", "lynx_memory.summarizer", data_dir, turn_id]
+    if judge:
+        args.append("--judge")
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "lynx_memory.summarizer", data_dir, turn_id],
+            args,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -444,24 +517,62 @@ def spawn_background(data_dir: str, turn_id: str) -> None:
         pass
 
 
-def _run_one(data_dir: str, turn_id: str) -> int:
-    from .config import GLOBAL_DATA_DIR, load_env
+def _run_one(data_dir: str, turn_id: str, judge: bool = False) -> int:
+    """Summarize (and optionally goal-judge) one stored turn.
+
+    The store is opened only around the read and the write — never across the
+    LLM call. On a synced store an open Memory holds the cross-process replica
+    lock, and a slow provider call used to starve the next hooks into the
+    local-sqlite fallback (writes that never reached the synced replica).
+    """
+    from .config import load_env
     from .storage import Memory
 
     ddir = Path(data_dir)
-    load_env(GLOBAL_DATA_DIR)
+    load_env(ddir)  # project .env first, global .env fills shared keys
     mem = Memory(data_dir=ddir)
     try:
         t = mem.get_turn(turn_id)
-        if t is None:
-            return 1
-        if t.get("summary"):
-            return 0  # already summarized
         goal = (mem.get_goal() or {}).get("text")
-        result = summarize_with_source(t["user_msg"], t["assistant_msg"], goal=goal)
-        if not result:
-            return 2
-        summary, source, used_model = result
+    finally:
+        mem.close()
+    if t is None:
+        return 1
+
+    if judge and goal:
+        from . import goals as _goals
+
+        verdict = judge_relevance(
+            goal,
+            t["user_msg"],
+            t["assistant_msg"],
+            strictness=_goals.strictness(),
+            timeout=None,
+        )
+        if verdict is False:
+            mem = Memory(data_dir=ddir)
+            try:
+                # only if the row wasn't re-ingested with newer content meanwhile
+                deleted = mem.forget_turn_if_unchanged(turn_id, t["ts"])
+            finally:
+                mem.close()
+            try:
+                from .hooks._log import log
+
+                log(f"[goals] turn {turn_id} judged IRRELEVANT (deferred) — "
+                    + ("soft-deleted" if deleted else "kept: row changed since judging"))
+            except Exception:
+                pass
+            return 0
+
+    if t.get("summary") or not is_enabled():
+        return 0
+    result = summarize_with_source(t["user_msg"], t["assistant_msg"], goal=goal)
+    if not result:
+        return 2
+    summary, source, used_model = result
+    mem = Memory(data_dir=ddir)
+    try:
         mem.set_summary(turn_id, summary, source=source, model=used_model)
     finally:
         mem.close()
@@ -469,9 +580,12 @@ def _run_one(data_dir: str, turn_id: str) -> int:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    judge = "--judge" in args
+    args = [a for a in args if a != "--judge"]
+    if len(args) != 2:
         sys.exit(64)
-    sys.exit(_run_one(sys.argv[1], sys.argv[2]))
+    sys.exit(_run_one(args[0], args[1], judge=judge))
 
 
 if __name__ == "__main__":

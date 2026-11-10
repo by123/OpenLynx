@@ -1441,6 +1441,159 @@ def cmd_daily(args: argparse.Namespace) -> int:
     return 1
 
 
+# --------------------------------------------------------------------- worklog
+
+def cmd_worklog_run(args: argparse.Namespace) -> int:
+    from . import worklog
+
+    try:
+        st = worklog.run(
+            since=args.since,
+            until=args.until,
+            days=args.days,
+            all_history=args.all,
+            jobs=args.jobs,
+            dry_run=args.dry_run,
+            force=args.force,
+            limit=args.limit,
+            project=args.project,
+            cards=not args.no_cards,
+            reconcile=not args.no_reconcile,
+            log=lambda m: print(m, flush=True),
+        )
+    except worklog.RunLocked as exc:
+        _print_warn(str(exc))
+        return 0
+    except Exception as exc:
+        from .storage import SyncUnavailable
+
+        if isinstance(exc, SyncUnavailable):
+            _print_warn(f"{exc} — nothing written; staged results are kept for the next run.")
+            return 1
+        raise
+    for store, res in st.reconciled.items():
+        print(f"  reconciled {store}: {res}")
+    if st.aborted or st.units_failed or st.cards_failed:
+        _print_warn(
+            f"{st.units_failed} unit(s) and {st.cards_failed} card(s) failed — "
+            "they are retried automatically on the next run."
+        )
+        return 1 if st.aborted else 0
+    if not args.dry_run:
+        _print_ok(f"work journal up to date ({st.units_done} unit(s) built, {st.cards_done} card(s) updated).")
+    return 0
+
+
+def cmd_worklog_backfill(args: argparse.Namespace) -> int:
+    args.all = True
+    return cmd_worklog_run(args)
+
+
+def cmd_worklog_status(args: argparse.Namespace) -> int:
+    from . import schedule, worklog
+    from .summarizer import active_provider
+
+    load_env(GLOBAL_DATA_DIR)
+    st = worklog.status()
+    print(f"journal dir : {st['dir']}")
+    print(f"units       : {st['units']} ({st['first_day'] or '-'} … {st['last_day'] or '-'}, "
+          f"{st['partial']} partial) covering {st['turns']} turns")
+    print(f"items       : {st['items'].get('work', 0)} work items, {st['items'].get('fact', 0)} facts")
+    print(f"cards       : {st['cards']} project card(s)")
+    if st["updated_at"]:
+        print(f"last build  : {time.strftime('%Y-%m-%d %H:%M', time.localtime(st['updated_at']))}")
+    if st["staged"]:
+        print(f"staged      : {st['staged']} result(s) waiting to be flushed (resumed next run)")
+    print(f"backend     : {active_provider() or 'none configured'}")
+    sch = schedule.status()
+    print(f"schedule    : {'installed ' + ', '.join(sch.get('times', [])) if sch.get('installed') else 'not installed'}"
+          + (f" (last exit {sch['last_exit']})" if sch.get("last_exit") else ""))
+    return 0
+
+
+def cmd_worklog_show(args: argparse.Namespace) -> int:
+    from . import worklog
+
+    d = worklog.worklog_dir()
+    if args.project:
+        idx_path = d / "index.json"
+        try:
+            idx = json.loads(idx_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _print_err("no journal yet — run `lynx-memory worklog run` first")
+            return 1
+        q = args.project.lower()
+        hits = [v for k, v in (idx.get("projects") or {}).items()
+                if q in k.lower() or q in (v.get("name") or "").lower()]
+        if not hits:
+            _print_err(f"no project card matches {args.project!r}")
+            return 1
+        f = d / "projects" / f"{hits[0]['slug']}.md"
+    else:
+        day = args.day or time.strftime("%Y-%m-%d")
+        f = d / "days" / f"{day}.md"
+    if not f.exists():
+        _print_err(f"not found: {f}")
+        return 1
+    print(f.read_text(encoding="utf-8"))
+    return 0
+
+
+def cmd_worklog_export(args: argparse.Namespace) -> int:
+    from . import worklog
+
+    load_env(GLOBAL_DATA_DIR)
+    res = worklog.export(Path(args.out).expanduser() if args.out else None)
+    _print_ok(f"exported {res['days']} day(s), {res['cards']} card(s) → {res['dir']}")
+    return 0
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    from . import schedule
+
+    action = getattr(args, "schedule_action", None) or "status"
+    try:
+        if action == "install":
+            _print_ok(schedule.install(args.at))
+            st = schedule.status()
+            print(f"  times: {', '.join(st.get('times', [])) or args.at}")
+            print("  each run builds/refreshes the work journal for the last 14 days "
+                  "(missed days are caught up automatically)")
+        elif action == "uninstall":
+            _print_ok(schedule.uninstall())
+        elif action == "run-now":
+            _print_ok(schedule.run_now())
+        else:
+            print(json.dumps(schedule.status(), indent=2, ensure_ascii=False))
+    except (RuntimeError, ValueError) as exc:
+        _print_err(str(exc))
+        return 1
+    return 0
+
+
+def cmd_sync_reconcile(args: argparse.Namespace) -> int:
+    from .reconcile import reconcile_store
+    from .worklog import discover_sources
+
+    load_env(GLOBAL_DATA_DIR)
+    total = 0
+    for d in discover_sources():
+        try:
+            res = reconcile_store(d, dry_run=args.dry_run)
+        except Exception as exc:  # e.g. SyncUnavailable — try again later
+            _print_warn(f"{d}: {type(exc).__name__}: {exc}")
+            continue
+        if not res:
+            continue
+        n = (res.get("inserted") or 0) + (res.get("updated") or 0) + (res.get("summaries") or 0)
+        total += n
+        if n or args.verbose:
+            print(f"  {d}: {res}")
+    verb = "would merge" if args.dry_run else "merged"
+    _print_ok(f"{verb} {total} stranded row(s) into synced replicas.")
+    return 0
+
+
 # --------------------------------------------------------------------- web
 
 def cmd_web(args: argparse.Namespace) -> int:
@@ -1647,6 +1800,60 @@ def main() -> None:
     s_init.add_argument("--force", action="store_true", help="Re-provision even if sync.json exists")
     s_init.add_argument("--all", action="store_true", help="Sync every project store on the machine")
     s_init.set_defaults(func=cmd_sync_init)
+    s_rec = ssub.add_parser(
+        "reconcile",
+        help="Merge rows stranded in the local fallback DB back into synced replicas",
+    )
+    s_rec.add_argument("--dry-run", action="store_true", help="Only report what would be merged")
+    s_rec.add_argument("-v", "--verbose", action="store_true", help="Show every store, even unchanged")
+    s_rec.set_defaults(func=cmd_sync_reconcile)
+
+    sp = sub.add_parser(
+        "worklog",
+        help="Work journal: Claude-written records of what you did, per project and day",
+    )
+    sp.set_defaults(func=cmd_worklog_status)
+    wsub = sp.add_subparsers(dest="worklog_action")
+
+    def _run_args(x: argparse.ArgumentParser) -> None:
+        x.add_argument("--days", type=int, default=14, help="Window: the last N days (default 14)")
+        x.add_argument("--since", default=None, help="Window start YYYY-MM-DD (overrides --days)")
+        x.add_argument("--until", default=None, help="Window end YYYY-MM-DD (default today)")
+        x.add_argument("--jobs", type=int, default=4, help="Parallel LLM calls (default 4)")
+        x.add_argument("--dry-run", action="store_true", help="Show what would be built, call nothing")
+        x.add_argument("--force", action="store_true", help="Rebuild units even if unchanged")
+        x.add_argument("--limit", type=int, default=None, help="Build at most N units this run")
+        x.add_argument("--project", default=None, help="Only projects whose path contains this text")
+        x.add_argument("--no-cards", action="store_true", help="Skip project-card updates")
+        x.add_argument("--no-reconcile", action="store_true", help="Skip merging stranded fallback rows")
+
+    w_run = wsub.add_parser("run", help="Build/refresh the journal (default: last 14 days)")
+    _run_args(w_run)
+    w_run.add_argument("--all", action="store_true", help="Whole history (same as `backfill`)")
+    w_run.set_defaults(func=cmd_worklog_run)
+    w_bf = wsub.add_parser("backfill", help="Summarize ALL recorded history (resumable)")
+    _run_args(w_bf)
+    w_bf.set_defaults(func=cmd_worklog_backfill, all=True)
+    w_st = wsub.add_parser("status", help="Journal coverage, backend and schedule")
+    w_st.set_defaults(func=cmd_worklog_status)
+    w_show = wsub.add_parser("show", help="Print a day's log or a project card")
+    w_show.add_argument("--day", default=None, help="YYYY-MM-DD (default today)")
+    w_show.add_argument("--project", default=None, help="Project name/path substring → its card")
+    w_show.set_defaults(func=cmd_worklog_show)
+    w_ex = wsub.add_parser("export", help="Re-render the Markdown/JSON files from the DB")
+    w_ex.add_argument("--out", default=None, help="Output dir (default ~/.openlynx/worklog)")
+    w_ex.set_defaults(func=cmd_worklog_export)
+
+    sp = sub.add_parser("schedule", help="Run the work journal automatically (launchd / cron)")
+    sp.set_defaults(func=cmd_schedule)
+    schsub = sp.add_subparsers(dest="schedule_action")
+    sch_i = schsub.add_parser("install", help="Install/replace the scheduled job")
+    sch_i.add_argument("--at", action="append", default=None,
+                       help="HH:MM, repeatable (default 20:30 and 08:30)")
+    sch_i.set_defaults(func=cmd_schedule)
+    for name, hlp in (("uninstall", "Remove the scheduled job"), ("status", "Show the job"),
+                      ("run-now", "Trigger the scheduled job immediately")):
+        schsub.add_parser(name, help=hlp).set_defaults(func=cmd_schedule)
 
     args = p.parse_args()
     sys.exit(args.func(args))

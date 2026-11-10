@@ -73,11 +73,15 @@ def get_goal_text(data_dir: Path) -> Optional[str]:
 
 
 def evaluate_turn_relevance(data_dir: Path, user_msg: str, assistant_msg: str) -> str:
-    """Decide whether a turn should be persisted: returns "store" or "drop".
+    """Decide whether a turn should be persisted: "store", "drop" or "defer".
 
     Fails open ("store") whenever there is no goal, gating is disabled, no LLM
     is configured, or the judge errors out — memory is never lost silently on
     an API hiccup. Only an explicit IRRELEVANT verdict drops the turn.
+
+    "defer" means: store now, judge in the background summarizer and
+    soft-delete if irrelevant. Used when the judge backend is `claude -p`,
+    whose multi-second cold start must not sit on the Stop hook's hot path.
     """
     from .hooks._log import log
 
@@ -93,6 +97,15 @@ def evaluate_turn_relevance(data_dir: Path, user_msg: str, assistant_msg: str) -
         from .config import load_env
 
         load_env(data_dir)
+    except Exception:
+        pass
+
+    try:
+        from .summarizer import active_provider
+
+        if active_provider() == "claude":
+            log("[goals] judge backend is claude — deferring relevance check to background")
+            return "defer"
     except Exception:
         pass
 

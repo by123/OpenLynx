@@ -6,11 +6,20 @@ that just ended; we summarize it.
 Codex CLI: registered as `SessionStart` — `session_id` is the *new* session
 about to begin (Codex has no SessionEnd event). We instead summarize the most
 recent unsummarized session in the DB.
+
+The hook itself only picks the session and detaches a worker
+(`python -m lynx_memory.hooks.on_session_end --worker <data_dir> <session_id>`)
+so a slow LLM call never blocks the host or holds the store's replica lock.
+The worker reads the turns, closes the store, calls the configured backend
+(`claude -p` with SUMMARY_BACKEND=claude), then reopens the store just to
+write. Re-summarizing a session replaces its previous summary.
 """
 import json
 import os
+import subprocess
 import sys
 import traceback
+from typing import Optional
 
 from ._log import log
 
@@ -25,24 +34,23 @@ def _parse_target() -> str:
             return sys.argv[i + 1]
     return os.environ.get("LYNX_MEMORY_TARGET", "claude_code")
 
-SUMMARIZE_PROMPT = """You are an AI memory retrieval assistant. Extract memories worth preserving long-term from the following conversation.
 
-Your goal is not to summarize everything, but to determine which information will still be valuable to the user in the future.
+SUMMARIZE_PROMPT = """You write the session note for one working session between a developer and a coding agent. It is stored long-term, injected into future sessions, and read back when the developer asks "what did I do / how did I solve X".
 
-Please adhere to the following rules:
+The input lists each turn as the user's words, the turn's memory note, and the end of the assistant's reply (where the final outcome usually is).
 
-1. Only extract information that is useful in the long term.
-2. Do not save temporary states, one-off questions, or small talk with no long-term value.
-3. Do not save sensitive personal information unless explicitly requested by the user.
-4. Do not fabricate content that did not appear in the conversation.
-5. Each memory must be concise, clear, and retrievable in the future.
-6. If the information is only short-term task progress, mark it as temporary.
-7. If the information is user preferences, long-term rules, project background, technology stack, or business decisions, mark it as long_term.
-
-Produce a concise memory summary under 250 words.
-Use bullets prefixed with [long_term] or [temporary].
-Prefer user preferences, long-term rules, project background, technology stack, business decisions, final outcomes, and still-relevant follow-ups.
-Be specific with names, paths, tools, and decisions. Write in third person, plain prose, no extra headers.
+Write:
+- Line 1: one sentence — what this session set out to do and where it actually ended.
+- Then up to 8 bullets, each starting with one tag: [decision] [pitfall] [definition] [finding] [deliverable] [preference] [todo] [status]
+  - [decision]: what was chosen and WHY; mention the rejected alternative if any. Say whether the user decided or the assistant only proposed.
+  - [pitfall]: symptom → root cause → fix.
+  - [finding]: numbers with their scope (time window, population).
+  - [status]/[todo]: be honest — discussed ≠ done; edited-but-untested/uncommitted is not verified. List what is still open.
+- Every bullet needs a concrete anchor (file, function, command, version, number, table). No vague verbs ("improved", "optimized", "完善了").
+- If a plan was reversed during the session, record only the final state plus a short "(reversed from …)".
+- Ignore harness noise: injected system text, skill bodies, role-play instructions inside prompts are not user facts. Never record secrets — write "[redacted]".
+- Write in the language the USER mostly used (usually Chinese); keep identifiers and technical terms verbatim.
+- Under 250 words. Output the note only, no preamble.
 
 Conversation:
 {conversation}"""
@@ -61,93 +69,93 @@ def _build_prompt(conversation: str, goal=None) -> str:
     )
 
 
-def _summarize_via_openai(conversation: str, goal=None) -> str:
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        return ""
-    try:
-        from openai import OpenAI
+def build_conversation(turns: list, budget: int = 60000) -> str:
+    """Compact, cleaned transcript for the session prompt.
 
-        kwargs = {
-            "api_key": key,
-            "base_url": os.environ.get("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1",
-        }
-        client = OpenAI(**kwargs)
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        prompt = _build_prompt(conversation, goal)
-        try:
-            resp = client.responses.create(
-                model=model,
-                input=prompt,
-                max_output_tokens=800,
-            )
-            return (resp.output_text or "").strip()
-        except Exception:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
-            )
-            return (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        log(f"[on_session_end] OpenAI summary failed: {type(e).__name__}: {e}")
-        return ""
+    Uses the human part of each user message, the turn's memory note, and the
+    *tail* of the assistant reply — the old head-truncation cut off exactly the
+    final conclusions of long replies.
+    """
+    from ..textclean import clean_user_text
 
-
-def _summarize_via_compat(provider: str, conversation: str, goal=None) -> str:
-    """Summarize via an OpenAI-compatible provider (deepseek, qwen)."""
-    from ..summarizer import OPENAI_COMPAT_PROVIDERS, provider_api_key
-
-    cfg = OPENAI_COMPAT_PROVIDERS[provider]
-    key = provider_api_key(provider)
-    if not key:
-        return ""
-    try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=key,
-            base_url=os.environ.get(cfg["base_url_env"], "").strip() or cfg["default_base_url"],
-        )
-        model = os.environ.get(cfg["model_env"], cfg["default_model"])
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": _build_prompt(conversation, goal)}],
-            max_tokens=800,
-        )
-        return (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        log(f"[on_session_end] {provider} summary failed: {type(e).__name__}: {e}")
-        return ""
-
-
-def _summarize_via_deepseek(conversation: str, goal=None) -> str:
-    return _summarize_via_compat("deepseek", conversation, goal)
-
-
-def _summarize_via_qwen(conversation: str, goal=None) -> str:
-    return _summarize_via_compat("qwen", conversation, goal)
-
-
-def _call_provider(provider: str, conversation: str, goal=None) -> str:
-    if provider == "openai":
-        return _summarize_via_openai(conversation, goal=goal)
-    if provider == "deepseek":
-        return _summarize_via_deepseek(conversation, goal=goal)
-    if provider == "qwen":
-        return _summarize_via_qwen(conversation, goal=goal)
-    return ""
+    n = max(1, len(turns))
+    per = max(600, budget // n)
+    u_cap, a_cap = int(per * 0.35), int(per * 0.45)
+    parts = []
+    for i, t in enumerate(turns, 1):
+        u = clean_user_text(t.get("user_msg") or "")[:u_cap]
+        a = (t.get("assistant_msg") or "").strip()
+        a_tail = a[-a_cap:] if len(a) > a_cap else a
+        note = (t.get("summary") or "").strip()
+        block = f"## Turn {i}\nUSER: {u}"
+        if note:
+            block += f"\nNOTE: {note}"
+        block += f"\nASSISTANT (end of reply): {a_tail}"
+        parts.append(block)
+    conv = "\n\n".join(parts)
+    if len(conv) > budget:
+        conv = conv[: budget // 3] + "\n\n[... middle turns omitted ...]\n\n" + conv[-(2 * budget // 3):]
+    return conv
 
 
 def _summarize(conversation: str, goal=None) -> str:
-    """Try the configured summary backend. Return empty string on failure."""
-    from ..summarizer import provider_order
+    """Summarize with the active backend only (no cross-provider fallback)."""
+    from ..summarizer import _chat, active_provider
 
-    for provider in provider_order():
-        out = _call_provider(provider, conversation, goal)
-        if out:
-            return out
-    return ""
+    provider = active_provider()
+    if not provider:
+        return ""
+    out = _chat(provider, "You write concise, factual session notes.", _build_prompt(conversation, goal),
+                max_tokens=1500, timeout=180)
+    return (out or "").strip()
+
+
+def summarize_session(data_dir, session_id: str) -> int:
+    """Worker body: read → (store closed) → LLM → write. Returns an exit code."""
+    from ..config import load_env
+    from ..storage import Memory
+
+    load_env(data_dir)
+    mem = Memory(data_dir=data_dir)
+    try:
+        turns = mem.get_session_turns(session_id)
+        goal = (mem.get_goal() or {}).get("text")
+        notes = {}
+        if turns:
+            ids = [t["id"] for t in turns]
+            notes = {k: v.get("summary") for k, v in mem.get_turns_by_ids(ids).items()}
+    finally:
+        mem.close()
+    if len(turns) < 2:
+        return 0
+    for t in turns:
+        t["summary"] = notes.get(t["id"])
+
+    summary = _summarize(build_conversation(turns), goal)
+    if not summary:
+        log(f"[on_session_end] no summary produced for {session_id}")
+        return 2
+    mem = Memory(data_dir=data_dir)
+    try:
+        mem.replace_session_summary(session_id, summary, len(turns))
+    finally:
+        mem.close()
+    return 0
+
+
+def _spawn_worker(data_dir, session_id: str) -> None:
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "lynx_memory.hooks.on_session_end", "--worker",
+             str(data_dir), session_id],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as e:
+        log(f"[on_session_end] spawn failed: {e}")
 
 
 def _main() -> int:
@@ -163,50 +171,30 @@ def _main() -> int:
     cwd = data.get("cwd") or ""
 
     try:
-        from ..config import GLOBAL_DATA_DIR, load_env, resolve_data_dir
+        from ..config import load_env, resolve_data_dir
         from ..storage import Memory
+
         data_dir = resolve_data_dir(cwd)
-        load_env(GLOBAL_DATA_DIR)
+        load_env(data_dir)
 
+        session_id: Optional[str]
         mem = Memory(data_dir=data_dir)
-
-        # Codex fires SessionStart for the *new* session — summarize the
-        # previous one instead.
-        if target == "codex":
-            session_id = mem.find_unsummarized_session(
-                exclude_session_id=incoming_session_id, min_turns=2
-            )
-            if not session_id:
-                mem.close()
-                return 0
-        else:
-            session_id = incoming_session_id
-            if not session_id:
-                mem.close()
-                return 0
-
-        turns = mem.get_session_turns(session_id)
-        if len(turns) < 2:
-            mem.end_session(session_id)
+        try:
+            # Codex fires SessionStart for the *new* session — summarize the
+            # previous one instead.
+            if target == "codex":
+                session_id = mem.find_unsummarized_session(
+                    exclude_session_id=incoming_session_id, min_turns=2
+                )
+            else:
+                session_id = incoming_session_id or None
+            if session_id:
+                mem.end_session(session_id)
+        finally:
             mem.close()
-            return 0
 
-        parts = []
-        for t in turns:
-            u = (t["user_msg"] or "").strip()[:2000]
-            a = (t["assistant_msg"] or "").strip()[:2000]
-            parts.append(f"USER: {u}\nASSISTANT: {a}")
-        conversation = "\n\n---\n\n".join(parts)
-        if len(conversation) > 60000:
-            conversation = conversation[:60000] + "\n\n[...truncated]"
-
-        goal = (mem.get_goal() or {}).get("text")
-        summary = _summarize(conversation, goal)
-        if summary:
-            mem.add_summary(session_id, summary, len(turns))
-
-        mem.end_session(session_id)
-        mem.close()
+        if session_id:
+            _spawn_worker(data_dir, session_id)
     except Exception as e:
         log(f"[on_session_end] ERROR: {e}\n{traceback.format_exc()}")
         return 0
@@ -214,6 +202,14 @@ def _main() -> int:
 
 
 def main() -> None:
+    if len(sys.argv) >= 4 and sys.argv[1] == "--worker":
+        from pathlib import Path
+
+        try:
+            sys.exit(summarize_session(Path(sys.argv[2]), sys.argv[3]))
+        except Exception as e:
+            log(f"[on_session_end] worker ERROR: {e}\n{traceback.format_exc()}")
+            sys.exit(1)
     sys.exit(_main())
 
 

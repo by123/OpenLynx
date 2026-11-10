@@ -24,15 +24,18 @@ Claude   : 结合你有蛋蛋（金色边牧）这个大运动量的伙伴，可
 | Hook               | 作用                                                                                |
 | ------------------ | ----------------------------------------------------------------------------------- |
 | `UserPromptSubmit` | 把你的 prompt 向量化，注入最相似的 K 条历史对话；命中的 turn 若已有摘要，注入**摘要**而非原文。 |
-| `Stop`             | 把本轮对话存入 SQLite + Chroma，并 detached fork 一个后台摘要进程，通过配置的 API（OpenAI / DeepSeek / Qwen）提取长期记忆。 |
-| `SessionEnd`       | 调用配置的 API，给整段会话生成一份粗粒度记忆摘要。                                   |
+| `Stop`             | 把本轮对话存入 SQLite + Chroma，并 detached fork 一个后台摘要进程（Claude `claude -p`，或 OpenAI / DeepSeek / Qwen）写这一轮的记忆笔记。 |
+| `SessionEnd`       | 分离出一个后台进程，为整段会话写一份会话笔记（结果、决策、踩坑、未闭环），同一会话只保留最新一份。 |
+
+在此之上，**[工作日志](#工作日志)**（`lynx-memory worklog`）把全部记录汇总成「每个项目 ×
+每一天到底做成了什么」，并为每个项目维护一张持续更新的项目卡——由定时任务每晚自动构建。
 
 存储方式：
 
 - **SQLite** — 原始对话、每轮摘要、会话级摘要的真实数据源。
 - **Chroma** — 本地向量索引（turns + 摘要）。
 - **Voyage AI** (`voyage-3.5`) — 文本向量化服务。
-- **OpenAI**（默认 `gpt-4o-mini`）、**DeepSeek**（`deepseek-chat`）或 **Qwen**（`qwen-turbo`）— 每轮摘要与会话摘要，配置 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`QWEN_API_KEY` 任意一个即可。
+- **Claude**（无头 Claude Code `claude -p`，用 `SUMMARY_BACKEND=claude` 显式开启——走你自己的 Claude 登录，无需 API key），或 **OpenAI**（`gpt-4o-mini`）、**DeepSeek**（`deepseek-chat`）、**Qwen**（`qwen-turbo`）— 负责各级摘要，任选其一即可。
 - **Turso / libSQL**（可选，默认关闭）— 开启[云端同步](#云端同步)后，SQLite 数据与向量会复制到你自己的远程数据库，实现跨电脑召回。
 
 ## 安装
@@ -104,11 +107,13 @@ Codex 的 `additionalContext` 字段会被完整尊重，记忆注入方式与 C
 | `lynx-memory init-project` | 在当前目录创建 `.lynx-memory/` 标记，启用项目级存储（`--goal "…"` 设置项目目标）。 |
 | `lynx-memory status`       | 查看数据目录、hook 注册情况、数据库统计、当前目标。                             |
 | `lynx-memory goal`         | 查看 / 设置 / 清除按 scope 划分的目标（`goal show \| set "…" \| clear`，可选 `--scope`）。 |
+| `lynx-memory worklog`      | 工作日志：`backfill`（全部历史）、`run`（最近 14 天，定时任务用它）、`status`、`show [--day D \| --project P]`、`export`。详见 [工作日志](#工作日志)。 |
+| `lynx-memory schedule`     | 自动运行工作日志：`install [--at HH:MM …]`（默认 20:30 + 08:30）、`uninstall`、`status`、`run-now`——macOS 用 launchd，Linux 用 cron。 |
 | `lynx-memory daily`        | 汇总项目当天的对话生成日报，可选推送到手机（`--notify`、`--all`、`--project`、`--since-hours`）。 |
 | `lynx-memory doctor`       | 自检 Python、依赖、API key、`settings.json`。                                    |
 | `lynx-memory merge`        | 在项目级 / 全局两个仓库之间合并记忆（`--from` / `--to` 选 `project\|global`，可选 `--dry-run`）。 |
 | `lynx-memory retag`        | 给历史 turn 回填结构化自动标签（`--scope project\|global\|both`，可选 `--dry-run` / `--limit`）。 |
-| `lynx-memory sync`         | 通过 Turso 把记忆同步到云端（`init` / `init --all` / `status`）。详见 [云端同步](#云端同步)。 |
+| `lynx-memory sync`         | 通过 Turso 把记忆同步到云端（`init` / `init --all` / `status` / `reconcile`）。详见 [云端同步](#云端同步)。 |
 | `lynx-memory delete`       | 永久删除某个 scope 的记忆（`--scope project\|global\|both`，默认带二次确认）。   |
 | `lynx-memory uninstall`    | 卸载 hooks、slash 命令与 skill 链接（保留数据）。                               |
 
@@ -141,7 +146,77 @@ lynx-memory goal clear         # 清除当前 scope 的目标（需确认）
 | `GOAL_STRICTNESS`     | `strict` | `loose` \| `balanced` \| `strict`          |
 | `GOAL_JUDGE_TIMEOUT`  | `8`      | 相关性 LLM 调用超时（秒，`0` = 不限）       |
 
+## 工作日志
+
+原始记忆回答的是「我们说过什么」；工作日志回答的是「我交付了什么、定了什么、学到了什么、还有什么没收尾」——
+覆盖每个项目、每一天。`lynx-memory worklog` 读取本机所有记忆库，由 Claude（无头 `claude -p`）逐层写成：
+
+```text
+turns（+ 每轮笔记）
+  └─► 单元 = 一个项目 × 一天 ─────────────────────► 项目卡（持续更新）
+        工作项  状态：done │ done-unverified │             一句话定位 · 现状 · 未闭环
+              uncommitted │ blocked:<谁> │                 现行决策 · 踩坑
+              discussed-only │ abandoned                    口径/定义 · 指标 · 里程碑
+        知识    踩坑 · 口径定义 · 结论 · 偏好（+ 证据 turn id）
+```
+
+「留什么、怎么写」是让多个 agent 基于真实记忆数据讨论定下来的（知识价值 / 管线架构 / 消费端三个视角）：
+
+- **状态诚实**——想清了≠做了；改了没测是 `done-unverified`；没提交是 `uncommitted`；
+  卡在别人那里是 `blocked:<谁>`。
+- **没有锚点就不写**——每条都要带文件、commit、版本、数字或表名；「优化了 X」这类空话直接丢弃。
+- **决策带理由**，也写被否掉的方案；当天反转的只记最终状态；返工次数会被记录。
+- **两路输出**——「进展」用于复盘，「知识」（踩坑、指标口径、带口径的结论）用于检索「上次怎么解决 X 的」。
+- **噪音不进模型**——CLAUDE.md 注入、skill 正文、子 agent 通知会先被清洗；被记成记忆的模板化批处理
+  （例如 `claude -p` 流水线）会被识别出来，只计数不总结。密钥类信息会被脱敏。
+
+### 先回填一次，之后自动运行
+
+```bash
+echo "SUMMARY_BACKEND=claude" >> ~/.openlynx/.env   # 用无头 Claude Code 总结
+
+lynx-memory worklog backfill --dry-run   # 先看要建多少单元、调多少次 LLM
+lynx-memory worklog backfill --jobs 5    # 总结全部历史（可断点续跑）
+lynx-memory schedule install             # 之后每天 20:30 + 08:30 自动跑
+
+lynx-memory worklog status               # 覆盖范围、后端、定时任务
+lynx-memory worklog show                 # 今天的日志
+lynx-memory worklog show --project app   # 某个项目的项目卡
+```
+
+每个单元都带一份输入指纹，所以每次只重建有变化的部分：每晚的增量很便宜，重复运行不花钱，
+电脑睡眠或关机错过的那几天会在下次运行时自动补齐（定时任务覆盖最近 14 天）。单元并行构建；
+中途崩溃会从 `~/.openlynx/worklog/.staging.jsonl` 续跑。结果在**一个事务**里写入全局库
+（`worklog_units`、`work_items`、`project_cards`），并渲染成普通文件——给人看，也给其他 agent 用：
+
+```text
+~/.openlynx/worklog/
+  days/YYYY-MM-DD.md     每日日志，按项目分组
+  projects/<名称>.md      项目卡（另有 <名称>.json）
+  open-loops.md          所有项目的未闭环事项
+  latest.md · index.json
+```
+
+**在哪里用到**
+
+- **Web UI → 工作日志**：按天浏览、看项目卡和未闭环，并可搜索工作项和知识。
+- **新会话**：在第一条提问时注入一次当前项目的项目卡（`<project-brief>`，最多约 1.4k 字符，
+  并标明「可能过时，以代码 / git 为准」）。用 `WORKLOG_INJECT_BRIEF=0` 关闭。
+
+**项目归属。** 项目级记忆库的 turn 都归该项目。全局库按工作目录归属——位于某个已有项目库内的目录归到该项目；
+临时目录、`~` 和 `~/Desktop` 归入杂项桶，不算项目。用 `WORKLOG_EXCLUDE="*/scratch*,*/private"` 排除路径。
+
+**`claude` 后端。** 每次调用都是隔离的 `claude -p`（无工具、无 MCP、禁用 hooks、`LYNX_MEMORY_NO_HOOK=1`、
+不落会话文件），所以总结过程永远不会把自己记成记忆。模型：`CLAUDE_MODEL`（默认 `sonnet`）用于工作日志单元、
+项目卡、会话笔记；`CLAUDE_FAST_MODEL`（默认 `haiku`）用于每轮笔记和目标判定。使用该后端时，目标相关性判定
+挪到后台进程执行（turn 先入库，判为无关再软删除），`Stop` hook 不会变慢。`SUMMARY_BACKEND=auto` 永远不会自动选
+`claude`——它消耗的是你的 Claude 套餐额度，需要显式开启。定时任务场景下请先 `claude setup-token`，把
+`CLAUDE_CODE_OAUTH_TOKEN=…` 写进 `~/.openlynx/.env`；launchd 任务无法可靠地刷新钥匙串里的登录态。
+
 ## 每日日报
+
+> [工作日志](#工作日志) 是它的持久化、结构化升级版：会落库、覆盖所有项目，也是定时任务构建的内容。
+> `daily` 保留用于临时快速回顾和推送到手机。
 
 `lynx-memory daily` 把项目当天的对话（本地 00:00 起，或 `--since-hours N`）汇总成一段
 简短的「今天我做了什么」日报——优先复用每条已有的摘要，设了目标的话会围绕目标。
@@ -199,7 +274,7 @@ lynx-memory daily --all --notify                   # 聚合全机所有库
 `127.0.0.1` 启动一个 FastAPI + React 的本地服务并自动开浏览器。在页面里你可以：
 
 - 以**卡片画廊**浏览记忆；点任意卡片，在右侧**抽屉**里查看完整内容、摘要、标签和被调用记录。
-- 在 **记忆**（已存的 turn）与 **检索记录**（记忆被后续提问调用的记录）两个视角间切换。
+- 在 **记忆**（已存的 turn）、**检索记录**（记忆被后续提问调用的记录）与 **工作日志**（[工作日志](#工作日志)：按天日志、项目卡、未闭环，以及对工作项和知识的搜索）三个视角间切换。
 - 在 **项目级** 与 **全局** 之间一键切换。
 - **关键字**（SQL `LIKE`）或 **语义** 搜索（基于 Voyage 向量）、**按日期筛选**、按**标签**过滤，或按**最常被检索**排序。
 - 给单条 turn 打标签（如 `#work`、`#personal`），删除单条 turn（同时清掉 Chroma 里的向量）。
@@ -307,6 +382,10 @@ init`：基于 git remote 派生的 id 会把它绑定到同一个数据库，�
 **开启云端同步**开关对应 `OPENLYNX_SYNC_ENABLED`）。关系型数据和向量 embedding 都会
 同步，所以跨电脑也能直接做语义搜索，无需重新向量化。
 
+如果 hook 没能及时拿到副本锁（或远端不可达），它会把这一轮写进本地的 `db/memory.db`，避免丢数据。
+`lynx-memory sync reconcile [--dry-run]` 会把这些滞留行合并回同步副本（同一轮的新版本覆盖旧版本；
+早于副本创建时间的行不会被"复活"），每次运行 `worklog` 也会自动做这一步。
+
 ## 配置
 
 全部可选，写在 `~/.openlynx/.env`：
@@ -317,7 +396,16 @@ init`：基于 git remote 派生的 id 会把它绑定到同一个数据库，�
 | `TOP_K`             | `5`                           | 每次注入的最多记忆条数            |
 | `MIN_SCORE`         | `0.7`                         | 相似度下限（0–1）                 |
 | `SUMMARY_ENABLED`   | `1`                           | 设为 `0`/`false` 关闭每轮摘要     |
-| `SUMMARY_BACKEND`   | `auto`                        | `auto`：按 OpenAI → DeepSeek → Qwen 顺序用第一个配了 key 的后端；可强制 `openai`、`deepseek` 或 `qwen` |
+| `SUMMARY_BACKEND`   | `auto`                        | `auto`：按 OpenAI → DeepSeek → Qwen 顺序用第一个配了 key 的后端；可强制 `claude`、`openai`、`deepseek` 或 `qwen`。强制后不会回落到其他后端 |
+| `CLAUDE_MODEL`      | `sonnet`                      | `claude` 后端：工作日志单元、项目卡、会话笔记 |
+| `CLAUDE_FAST_MODEL` | `haiku`                       | `claude` 后端：每轮笔记、目标判定 |
+| `CLAUDE_BIN`        | `PATH` 中的 `claude`          | Claude Code CLI 路径              |
+| `CLAUDE_TIMEOUT`    | `300`                         | 每次 `claude -p` 调用的超时（秒） |
+| `CLAUDE_CODE_OAUTH_TOKEN` | —                       | `claude setup-token` 生成的长期 token，供定时任务（launchd/cron）使用 |
+| `WORKLOG_DIR`       | `~/.openlynx/worklog`         | 工作日志导出目录                  |
+| `WORKLOG_EXCLUDE`   | —                             | 逗号分隔的项目路径 glob，命中的不进工作日志 |
+| `WORKLOG_INJECT_BRIEF` | `1`                        | 会话第一条提问时注入项目卡        |
+| `WORKLOG_LANG`      | 自动                          | 导出 Markdown 的标签语言 `zh` / `en` |
 | `OPENAI_API_KEY`    | —                             | `SUMMARY_BACKEND=openai` 时必填   |
 | `OPENAI_MODEL`      | `gpt-4o-mini`                 | OpenAI 摘要用的模型               |
 | `OPENAI_BASE_URL`   | `https://api.openai.com/v1`   | 兼容 OpenAI 协议的自定义端点      |
@@ -336,7 +424,7 @@ init`：基于 git remote 派生的 id 会把它绑定到同一个数据库，�
 | `OPENLYNX_SYNC_ENABLED` | `0`                       | 设为 `1` 开启全局库同步           |
 | `OPENLYNX_SYNC_INTERVAL` | `60`                     | 后台副本同步的最小间隔（秒）      |
 
-「云端同步」「目标」与「每日日报」的专属环境变量见对应章节。
+「云端同步」「目标」「工作日志」与「每日日报」的专属环境变量见对应章节。
 
 ## 可选：MCP 服务
 
@@ -383,6 +471,10 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 
 - [x] **目标与每日日报** — 设置按 scope 的目标来 gating 存储、聚焦摘要；`lynx-memory daily` 生成当天日报（单项目或 `--all` 全机聚合），并可推送到手机。
 
+- [x] **工作日志** — 由 Claude 写的「项目 × 天」工作记录（状态诚实、可复用知识、持续更新的项目卡）；支持全量回填、定时补跑、Web UI 视图和会话开场项目简报。详见 [工作日志](#工作日志)。
+
+- [ ] **周报 / 月报** — 把每日单元再汇总成周、月回顾。
+
 - [ ] **其他 CLI（Cursor、Gemini CLI 等）** — 尚未接入。**Cursor**：需等待官方开放可用的 hooks 能力后再对接（当前策略是先等 hook）；在此之前仍可按需使用 MCP 等方式。
 
 - [ ] **统一多客户端安装器**
@@ -404,6 +496,11 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 ## 更新日志
 
 完整历史见 [GitHub Releases](https://github.com/by123/OpenLynx/releases)。
+
+- **0.8.0** — **工作日志**（`lynx-memory worklog`）：把所有记忆库的历史由 Claude 总结成「项目 × 天」单元（带诚实状态的工作项、可复用知识、证据）和持续更新的项目卡；`backfill` 回填全部历史，按输入指纹增量运行，可断点续跑，单事务写入；导出 Markdown/JSON；Web UI 新增 **工作日志** 视图；会话第一条提问注入项目简报。新增 **`claude` 总结后端**（无头 `claude -p`，需显式开启），用于每轮笔记、会话笔记和目标判定（判定挪到后台进程）。**`lynx-memory schedule`** 安装每晚任务（launchd / cron），自动补跑。可靠性：后台进程调 LLM 时不再占用副本锁；`lynx-memory sync reconcile`（以及每次工作日志运行）把滞留在本地兜底库的行合并回同步副本；记忆库发现能识别只有副本的库。质量：总结前清洗 CLAUDE.md 注入、skill 正文、task-notification 等噪音，这类消息也不再触发召回；笔记改用带类型的格式（`[decision]`、`[pitfall]`、`[todo]` …）；每个会话只保留一份会话笔记，且取材于回复结尾的结论而不是开头。
+- **0.7.2** — libSQL 副本的跨进程锁；批量操作改为集合式写入。
+- **0.7.1** — turn 与摘要支持软删除，并随同步传播。
+- **0.7.0** — Web UI：每个项目一个标签页、批量删除、项目可见性。
 
 - **0.6.0** — **云端同步**（基于 Turso / libSQL 嵌入式副本）：`lynx-memory sync init` 为每个项目创建独立数据库（以 git remote 为键，保证跨电脑稳定召回），`--all` 同步本机所有仓库，关系数据与向量 embedding 一并上传。Web UI ⚙ 设置面板重排为**左侧菜单**，其中 **云端同步 (Turso)** 分区把全局库同步与项目建库两种情况分开。
 - **0.5.0** — Web UI 重做：全宽卡片画廊 + 右侧详情抽屉，暖色主题；界面国际化（**默认英文**，一键切**中文**）；记忆列表支持**按日期筛选**（`/api/turns` 新增 `since` / `until`）。

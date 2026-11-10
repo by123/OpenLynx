@@ -6,6 +6,7 @@ import { MemoryGrid } from "./components/MemoryGrid";
 import { MemoryDetail } from "./components/MemoryDetail";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { HelpModal } from "./components/HelpModal";
+import { WorklogView } from "./components/WorklogView";
 import { useI18n } from "./i18n";
 
 export default function App() {
@@ -107,6 +108,14 @@ export default function App() {
           >
             {t("view.retrieval")}
           </button>
+          <button
+            role="tab"
+            className={`view-pill${lens === "worklog" ? " active" : ""}`}
+            onClick={() => changeLens("worklog")}
+            title={t("view.worklog.title")}
+          >
+            {t("view.worklog")}
+          </button>
         </div>
 
         <div className="topbar-right">
@@ -145,6 +154,7 @@ export default function App() {
         </div>
       </header>
 
+      {lens !== "worklog" && (
       <div className="scope-bar">
         <span className="topbar-label">{t("scope.label")}</span>
         <div className="scope-switch scope-tabs" role="tablist" aria-label={t("scope.label")}>
@@ -166,6 +176,7 @@ export default function App() {
           ))}
         </div>
       </div>
+      )}
 
       <SettingsPanel
         open={settingsOpen}
@@ -174,15 +185,19 @@ export default function App() {
       />
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
 
-      <MemoryGrid
-        scope={scope}
-        lens={lens}
-        scopesReady={scopes !== null}
-        refreshKey={refreshKey}
-        selectedId={selectedId}
-        onSelect={setSelection}
-        onCountsChanged={reloadScopes}
-      />
+      {lens === "worklog" ? (
+        <WorklogView />
+      ) : (
+        <MemoryGrid
+          scope={scope}
+          lens={lens}
+          scopesReady={scopes !== null}
+          refreshKey={refreshKey}
+          selectedId={selectedId}
+          onSelect={setSelection}
+          onCountsChanged={reloadScopes}
+        />
+      )}
 
       {selection && (
         <Drawer onClose={() => setSelection(null)}>

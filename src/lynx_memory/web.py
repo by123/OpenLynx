@@ -4,8 +4,10 @@ Run with `lynx-memory web`.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -310,6 +312,73 @@ def create_app() -> FastAPI:
             total = mem.count_turns(query=q, tag=tag, since=since, until=until)
             _attach_retrieval_counts(mem, items)
             return {"items": items, "total": total, "mode": "keyword"}
+
+    # ---- work journal (worklog.py) — read-only views over the exports ----
+    def _wl_dir() -> Path:
+        from .worklog import worklog_dir
+
+        return worklog_dir()
+
+    def _wl_read(rel: str) -> str:
+        base = _wl_dir().resolve()
+        f = (base / rel).resolve()
+        if base not in f.parents or not f.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return f.read_text(encoding="utf-8")
+
+    @app.get("/api/worklog/index")
+    def worklog_index() -> dict:
+        try:
+            idx = json.loads(_wl_read("index.json"))
+        except HTTPException:
+            return {"exists": False, "days": {}, "projects": {}, "dir": str(_wl_dir())}
+        idx["exists"] = True
+        idx["dir"] = str(_wl_dir())
+        return idx
+
+    @app.get("/api/worklog/day/{day}")
+    def worklog_day(day: str) -> dict:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise HTTPException(status_code=400, detail="bad day")
+        return {"day": day, "markdown": _wl_read(f"days/{day}.md")}
+
+    @app.get("/api/worklog/project/{slug}")
+    def worklog_project(slug: str) -> dict:
+        if not re.fullmatch(r"[\w.\-]+", slug):
+            raise HTTPException(status_code=400, detail="bad slug")
+        return {"slug": slug, "markdown": _wl_read(f"projects/{slug}.md")}
+
+    @app.get("/api/worklog/open-loops")
+    def worklog_open_loops() -> dict:
+        return {"markdown": _wl_read("open-loops.md")}
+
+    @app.get("/api/worklog/search")
+    def worklog_search(q: str, limit: int = 50) -> dict:
+        q = (q or "").strip()
+        if not q:
+            return {"items": []}
+        like = f"%{q}%"
+        with _memory_for("global") as mem:
+            try:
+                rows = mem.db.execute(
+                    "SELECT i.id, i.day, i.project_key, u.project_name, i.kind, i.type, i.title, "
+                    "i.text, i.status, i.data FROM work_items i "
+                    "JOIN worklog_units u ON u.id = i.unit_id "
+                    "WHERE i.deleted_at IS NULL AND (i.text LIKE ? OR i.title LIKE ? OR i.data LIKE ?) "
+                    "ORDER BY i.day DESC LIMIT ?",
+                    (like, like, like, max(1, min(200, limit))),
+                ).fetchall()
+            except Exception:
+                rows = []
+        items = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["data"] = json.loads(d.get("data") or "{}")
+            except ValueError:
+                d["data"] = {}
+            items.append(d)
+        return {"items": items}
 
     @app.get("/api/retrievals")
     def get_retrievals(

@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 import sqlite3
 import tempfile
 import unittest
@@ -115,7 +116,9 @@ class SoftDeleteTest(unittest.TestCase):
 
         m = self._memory()
         try:
-            self.assertEqual(m.db.execute("PRAGMA user_version").fetchone()[0], 4)
+            from lynx_memory.storage._base import TARGET_SCHEMA_VERSION
+
+            self.assertEqual(m.db.execute("PRAGMA user_version").fetchone()[0], TARGET_SCHEMA_VERSION)
             cols = {r[1] for r in m.db.execute("PRAGMA table_info(turns)")}
             self.assertIn("deleted_at", cols)
             # the pre-existing row survives migration and stays visible

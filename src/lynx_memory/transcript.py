@@ -375,7 +375,12 @@ def persist_last_turn(
     if state.get(session_id) == a_uuid:
         return "skip"
 
-    user_text = user_text[:8000]
+    if len(user_text) > 8000:
+        # Harness envelopes (CLAUDE.md reminders, skill bodies) can fill the
+        # whole budget ahead of what the user actually typed — strip first.
+        from .textclean import clean_user_text
+
+        user_text = (clean_user_text(user_text) or user_text)[:8000]
 
     # Goal relevance gate: when this store has a goal, an LLM decides whether
     # the turn is worth keeping. Irrelevant turns never touch the DB. We record
@@ -383,7 +388,8 @@ def persist_last_turn(
     # (Stop vs UserPromptSubmit) doesn't re-judge the same turn. Fails open.
     from .goals import evaluate_turn_relevance
 
-    if evaluate_turn_relevance(data_dir, user_text, asst_text) == "drop":
+    verdict = evaluate_turn_relevance(data_dir, user_text, asst_text)
+    if verdict == "drop":
         state[session_id] = a_uuid
         _save_state(state_path, state)
         return "gated"
@@ -399,7 +405,7 @@ def persist_last_turn(
         try:
             from .summarizer import spawn_background
 
-            spawn_background(str(data_dir), turn_id)
+            spawn_background(str(data_dir), turn_id, judge=(verdict == "defer"))
         except Exception:
             pass
         state[session_id] = a_uuid

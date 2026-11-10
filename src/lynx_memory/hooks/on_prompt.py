@@ -71,6 +71,18 @@ def _main() -> int:
 
     if not prompt or len(prompt) < 4:
         return 0
+    try:
+        from ..textclean import is_noise_prompt
+
+        if is_noise_prompt(prompt):
+            # e.g. a bare <task-notification> from a finished subagent — not a
+            # user question; recall would only inject unrelated context.
+            log("[on_prompt] prompt is harness noise only, skipping recall")
+            return 0
+    except Exception:
+        pass
+
+    brief = _session_brief(session_id, cwd)
 
     try:
         from ..config import load_env, resolve_data_dir
@@ -95,10 +107,14 @@ def _main() -> int:
         )
     except Exception as e:
         log(f"[on_prompt] ERROR: {e}\n{traceback.format_exc()}")
+        if brief:
+            _emit(brief, target)
         return 0
 
     if not results:
         log("[on_prompt] no results above min_score, skipping injection")
+        if brief:
+            _emit(brief, target)
         return 0
 
     try:
@@ -141,7 +157,13 @@ def _main() -> int:
         lines.append(f"\n[{tag} · score={score}]\n{text}")
     lines.append("</memory>")
     body = "\n".join(lines)
+    if brief:
+        body = brief + "\n\n" + body
+    _emit(body, target)
+    return 0
 
+
+def _emit(body: str, target: str) -> None:
     if target == "codex":
         sys.stdout.write(json.dumps({
             "hookSpecificOutput": {
@@ -151,7 +173,46 @@ def _main() -> int:
         }))
     else:
         sys.stdout.write(body + "\n")
-    return 0
+
+
+def _session_brief(session_id: str, cwd: str):
+    """Project card from the work journal, injected once per session (on its
+    first real prompt). Reads exported files only — no DB, no lock.
+    Disable with WORKLOG_INJECT_BRIEF=0."""
+    if not cwd or not session_id or session_id == "unknown":
+        return None
+    try:
+        from ..config import load_env, resolve_data_dir
+
+        load_env(resolve_data_dir(cwd))
+        if os.environ.get("WORKLOG_INJECT_BRIEF", "1").strip().lower() in ("0", "false", "off", "no"):
+            return None
+        from ..worklog import brief_for_cwd, worklog_dir
+
+        state_path = worklog_dir() / ".briefed.json"
+        try:
+            seen = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            seen = {}
+        if session_id in seen:
+            return None
+        brief = brief_for_cwd(cwd)
+        if not brief:
+            return None
+        import time as _t
+
+        seen[session_id] = _t.time()
+        if len(seen) > 500:
+            seen = dict(sorted(seen.items(), key=lambda kv: kv[1])[-400:])
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(seen), encoding="utf-8")
+        os.replace(tmp, state_path)
+        log(f"[on_prompt] injecting project brief ({len(brief)} chars)")
+        return brief
+    except Exception as e:
+        log(f"[on_prompt] brief ERROR: {e}")
+        return None
 
 
 def main() -> None:

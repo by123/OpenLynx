@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 import unittest
 
 from lynx_memory.transcript import find_last_turn, find_last_turn_codex

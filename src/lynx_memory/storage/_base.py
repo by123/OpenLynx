@@ -24,6 +24,63 @@ TAG_KIND_WEIGHTS = {
     "custom": 0.0,
 }
 
+# Work journal (v5): derived, claude-written summaries — see worklog.py.
+# `worklog_units` = one (project × day) unit; `work_items` = its work items and
+# reusable facts (queryable); `project_cards` = rolling per-project state.
+WORKLOG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS worklog_units (
+    id TEXT PRIMARY KEY,
+    day TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    project_name TEXT,
+    headline TEXT,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'partial',
+    turn_count INTEGER DEFAULT 0,
+    session_count INTEGER DEFAULT 0,
+    automation_runs INTEGER DEFAULT 0,
+    first_ts REAL,
+    last_ts REAL,
+    source_stores TEXT,
+    input_hash TEXT NOT NULL,
+    prompt_version INTEGER NOT NULL,
+    model TEXT,
+    host TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    deleted_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_worklog_units_day ON worklog_units(day);
+CREATE INDEX IF NOT EXISTS idx_worklog_units_project ON worklog_units(project_key, day);
+CREATE TABLE IF NOT EXISTS work_items (
+    id TEXT PRIMARY KEY,
+    unit_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    type TEXT,
+    title TEXT,
+    text TEXT NOT NULL,
+    status TEXT,
+    data TEXT,
+    created_at REAL NOT NULL,
+    deleted_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_work_items_unit ON work_items(unit_id);
+CREATE INDEX IF NOT EXISTS idx_work_items_project ON work_items(project_key, day);
+CREATE TABLE IF NOT EXISTS project_cards (
+    project_key TEXT PRIMARY KEY,
+    project_name TEXT,
+    body TEXT NOT NULL,
+    folded TEXT,
+    through_day TEXT,
+    model TEXT,
+    host TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -106,14 +163,14 @@ CREATE TABLE IF NOT EXISTS summary_vectors (
     dim INTEGER,
     vec BLOB
 );
-"""
+""" + WORKLOG_SCHEMA
 
 
 # Schema version stored in `PRAGMA user_version`. Bump when adding a
 # migration. Fresh DBs jump straight to TARGET after SCHEMA runs (SCHEMA
 # already includes every column); pre-existing DBs get patched by the
 # corresponding migration step.
-TARGET_SCHEMA_VERSION = 4
+TARGET_SCHEMA_VERSION = 5
 
 
 def _migrate_to_v1(db: sqlite3.Connection) -> None:
@@ -189,20 +246,40 @@ def _migrate_to_v4(db) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_summaries_deleted ON summaries(deleted_at)")
 
 
-# Map version -> migration function. To add a v5: write _migrate_to_v5,
+def _migrate_to_v5(db) -> None:
+    """Add the work-journal tables (worklog_units / work_items / project_cards)."""
+    for stmt in WORKLOG_SCHEMA.split(";"):
+        if stmt.strip():
+            db.execute(stmt)
+
+
+# Map version -> migration function. To add a v6: write _migrate_to_v6,
 # add entry here, bump TARGET_SCHEMA_VERSION.
-_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2, 3: _migrate_to_v3, 4: _migrate_to_v4}
+_MIGRATIONS = {
+    1: _migrate_to_v1,
+    2: _migrate_to_v2,
+    3: _migrate_to_v3,
+    4: _migrate_to_v4,
+    5: _migrate_to_v5,
+}
 
 
-def _apply_migrations(db: sqlite3.Connection) -> None:
+def _apply_migrations(db: sqlite3.Connection) -> bool:
+    """Bring the DB to TARGET_SCHEMA_VERSION. Returns True if anything ran."""
     current = db.execute("PRAGMA user_version").fetchone()[0]
     if current >= TARGET_SCHEMA_VERSION:
-        return
+        return False
     for version in range(current + 1, TARGET_SCHEMA_VERSION + 1):
         migration = _MIGRATIONS.get(version)
         if migration is not None:
             migration(db)
         db.execute(f"PRAGMA user_version = {version}")
+    return True
+
+
+class SyncUnavailable(RuntimeError):
+    """A synced store could not open its replica (lock busy / remote down) and
+    the caller asked for `strict_sync` instead of the local-sqlite fallback."""
 
 
 def _replica_lock_path(replica: Path) -> Path:
@@ -254,7 +331,14 @@ def _release_replica_lock(fd) -> None:
 
 
 class _MemoryBase:
-    def __init__(self, data_dir: Optional[Path] = None, *, hold_replica_lock: bool = True) -> None:
+    def __init__(
+        self,
+        data_dir: Optional[Path] = None,
+        *,
+        hold_replica_lock: bool = True,
+        strict_sync: bool = False,
+        lock_timeout: Optional[float] = None,
+    ) -> None:
         self.data_dir = data_dir or GLOBAL_DATA_DIR
         paths = paths_for(self.data_dir)
         ensure_dirs(self.data_dir)
@@ -269,6 +353,12 @@ class _MemoryBase:
         # shared Memory (web UI) sets this False to avoid starving hooks, and
         # only locks briefly around `sync()`.
         self._hold_replica_lock = hold_replica_lock
+        # strict_sync: raise SyncUnavailable instead of silently opening the
+        # stale local memory.db when the replica can't be opened. Batch jobs
+        # (worklog, reconcile) use it — reading or writing the fallback DB would
+        # build summaries from partial data or hide their own writes.
+        self._strict_sync = strict_sync
+        self._lock_timeout = lock_timeout
         self._replica_lock_fd = None
 
         self.synced, init_schema = self._open_db()
@@ -282,9 +372,11 @@ class _MemoryBase:
         # migrations are cheap (a local user_version read) and only write on a
         # real upgrade, so run them every open — this lets a new migration (e.g.
         # v3 vector tables) reach an already-initialized synced replica.
-        _apply_migrations(self.db)
+        migrated = _apply_migrations(self.db)
         self.db.commit()
-        if self.synced and init_schema:
+        if self.synced and (init_schema or migrated):
+            # replica writes go to the primary; pull so new tables are
+            # readable locally in this same process
             self.db.sync()
 
         # The schema/migration/first-sync above is the most replica-mutating
@@ -391,7 +483,11 @@ class _MemoryBase:
                 # _acquire_replica_lock). Bounded wait, then degrade to local
                 # sqlite rather than block a latency-sensitive hook forever.
                 try:
-                    lock_timeout = float(os.environ.get("OPENLYNX_SYNC_LOCK_TIMEOUT", "30") or 30)
+                    lock_timeout = (
+                        float(self._lock_timeout)
+                        if self._lock_timeout is not None
+                        else float(os.environ.get("OPENLYNX_SYNC_LOCK_TIMEOUT", "30") or 30)
+                    )
                 except ValueError:
                     lock_timeout = 30.0
                 self._replica_lock_fd = _acquire_replica_lock(replica, lock_timeout)
@@ -406,6 +502,10 @@ class _MemoryBase:
                     sentinel.touch()
                 return True, first_time
             except Exception:
+                if self._strict_sync:
+                    _release_replica_lock(self._replica_lock_fd)
+                    self._replica_lock_fd = None
+                    raise SyncUnavailable(f"synced store {self.data_dir} unavailable (lock busy or remote down)")
                 logger.exception("libSQL sync connect failed; falling back to local sqlite")
                 _release_replica_lock(self._replica_lock_fd)
                 self._replica_lock_fd = None

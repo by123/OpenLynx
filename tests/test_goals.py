@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 import os
 import tempfile
 import unittest
@@ -104,6 +105,10 @@ class EvaluateTurnRelevanceTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.data_dir = Path(self._tmp.name)
+        # never let the developer's real ~/.openlynx/.env leak into the gate
+        p = mock.patch("lynx_memory.config.load_env", lambda *a, **k: None)
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self):
         self._tmp.cleanup()

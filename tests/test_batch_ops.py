@@ -1,3 +1,4 @@
+import _hermetic  # noqa: F401  (must precede lynx_memory imports)
 """Set-based batch operations: deletes/inserts that hit the DB once, not per row.
 
 These guard the contract behind the Turso guideline — bulk writes go out as a

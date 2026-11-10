@@ -9,6 +9,8 @@ import type {
   TopReferencedResponse,
   TurnRetrievalsResponse,
   TurnsResponse,
+  WorklogIndex,
+  WorklogSearchItem,
 } from "./types";
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -26,6 +28,14 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
 
 export const api = {
   scopes: () => jsonFetch<ScopesResponse>("/api/scopes"),
+
+  worklogIndex: () => jsonFetch<WorklogIndex>("/api/worklog/index"),
+  worklogDay: (day: string) => jsonFetch<{ markdown: string }>(`/api/worklog/day/${day}`),
+  worklogProject: (slug: string) =>
+    jsonFetch<{ markdown: string }>(`/api/worklog/project/${encodeURIComponent(slug)}`),
+  worklogOpenLoops: () => jsonFetch<{ markdown: string }>("/api/worklog/open-loops"),
+  worklogSearch: (q: string) =>
+    jsonFetch<{ items: WorklogSearchItem[] }>(`/api/worklog/search?q=${encodeURIComponent(q)}`),
 
   rescanProjects: () => jsonFetch<ScopesResponse>("/api/projects/rescan", { method: "POST" }),
 

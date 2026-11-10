@@ -3,7 +3,45 @@ export type Scope = string;
 export type SearchMode = "keyword" | "semantic";
 
 /** Which lens the workspace is browsing through. */
-export type Lens = "memory" | "retrieval";
+export type Lens = "memory" | "retrieval" | "worklog";
+
+/** Work journal (`lynx-memory worklog`) — exported index.json */
+export interface WorklogDay {
+  status: "partial" | "final";
+  turns: number;
+  projects: string[];
+  updated_at: number;
+  file: string;
+}
+
+export interface WorklogProject {
+  name: string;
+  slug: string;
+  through_day?: string | null;
+  updated_at: number;
+}
+
+export interface WorklogIndex {
+  exists: boolean;
+  dir: string;
+  generated_at?: number;
+  latest_day?: string | null;
+  days: Record<string, WorklogDay>;
+  projects: Record<string, WorklogProject>;
+}
+
+export interface WorklogSearchItem {
+  id: string;
+  day: string;
+  project_key: string;
+  project_name?: string | null;
+  kind: "work" | "fact";
+  type?: string | null;
+  title?: string | null;
+  text: string;
+  status?: string | null;
+  data: Record<string, unknown>;
+}
 
 export interface TagAttachment {
   name: string;

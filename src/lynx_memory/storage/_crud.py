@@ -242,6 +242,27 @@ class _CrudMixin:
         """Soft-delete a single turn (see `forget_turns` for the set-based form)."""
         return self.forget_turns([turn_id]) > 0
 
+    def forget_turn_if_unchanged(self, turn_id: str, ts: float) -> bool:
+        """Soft-delete a turn only if it still has timestamp `ts` (i.e. nobody
+        re-ingested newer content into the row since the caller read it).
+        Used by the deferred goal judge so a verdict on an early, partial reply
+        can't delete the final one."""
+        cur = self.db.execute(
+            "UPDATE turns SET deleted_at = ? WHERE id = ? AND ts = ? AND deleted_at IS NULL",
+            (time.time(), turn_id, ts),
+        )
+        changed = cur.rowcount
+        if changed is None or changed < 0:  # driver can't tell — check
+            row = self.db.execute("SELECT deleted_at FROM turns WHERE id = ?", (turn_id,)).fetchone()
+            changed = 1 if row is not None and row[0] is not None else 0
+        if changed:
+            try:
+                self.turns.delete(ids=[turn_id])
+            except Exception:
+                pass
+        self.db.commit()
+        return bool(changed)
+
     def forget_turns(self, turn_ids: List[str]) -> int:
         """Soft-delete many turns in one set-based pass.
 
@@ -280,6 +301,41 @@ class _CrudMixin:
     def add_summary(self, session_id: str, summary: str, turn_count: int) -> str:
         sid = str(uuid.uuid4())
         ts = time.time()
+        self.db.execute(
+            "INSERT INTO summaries(id, session_id, ts, summary, turn_count) VALUES(?,?,?,?,?)",
+            (sid, session_id, ts, summary, turn_count),
+        )
+        self.db.commit()
+        self._index_summary_document(sid, session_id=session_id, ts=ts, summary=summary)
+        return sid
+
+    def replace_session_summary(self, session_id: str, summary: str, turn_count: int) -> str:
+        """Upsert the single live summary of a session.
+
+        Soft-deletes any earlier live summaries for the session and inserts the
+        new one in ONE transaction (one commit → one remote push when synced),
+        then indexes the new row. Sessions used to accumulate several
+        summaries when SessionEnd fired more than once.
+        """
+        old_ids = [
+            r["id"]
+            for r in self.db.execute(
+                "SELECT id FROM summaries WHERE session_id = ? AND deleted_at IS NULL",
+                (session_id,),
+            ).fetchall()
+        ]
+        sid = str(uuid.uuid4())
+        ts = time.time()
+        if old_ids:
+            placeholders = ",".join("?" for _ in old_ids)
+            self.db.execute(
+                f"UPDATE summaries SET deleted_at = ? WHERE id IN ({placeholders})",
+                [ts, *old_ids],
+            )
+            try:
+                self.summaries.delete(ids=old_ids)
+            except Exception:
+                pass
         self.db.execute(
             "INSERT INTO summaries(id, session_id, ts, summary, turn_count) VALUES(?,?,?,?,?)",
             (sid, session_id, ts, summary, turn_count),
