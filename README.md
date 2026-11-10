@@ -244,7 +244,9 @@ summary never records itself as memory. Models: `CLAUDE_MODEL` (default
 goal judge runs in the background worker (the turn is stored first and
 soft-deleted if judged irrelevant), keeping the `Stop` hook fast. `claude` is
 never picked by `SUMMARY_BACKEND=auto` — it spends your Claude plan, so it is
-opt-in. For scheduled runs, `claude setup-token` once and put
+opt-in. Set `CLAUDE_USAGE_CAP=0.8` to keep OpenLynx from eating the last 20%
+of your 5-hour window (`lynx-memory worklog status` shows current usage). For
+scheduled runs, `claude setup-token` once and put
 `CLAUDE_CODE_OAUTH_TOKEN=…` in `~/.openlynx/.env`; launchd jobs can't refresh a
 keychain login reliably.
 
@@ -425,6 +427,8 @@ All optional, set in `~/.openlynx/.env`:
 | `CLAUDE_FAST_MODEL` | `haiku`                     | `claude` backend: per-turn notes and the goal judge |
 | `CLAUDE_BIN`      | `claude` on `PATH`            | Path to the Claude Code CLI                         |
 | `CLAUDE_TIMEOUT`  | `300`                         | Seconds per `claude -p` call                        |
+| `CLAUDE_USAGE_CAP` | —                            | e.g. `0.8`: stop every OpenLynx `claude -p` call once your plan's usage window reaches 80%, until it resets (read from each call's rate-limit info; batch jobs stop cleanly and resume later, hooks just skip the note) |
+| `CLAUDE_USAGE_CAP_WINDOWS` | `five_hour`         | Which windows the cap watches (`five_hour`, `seven_day`, comma-separated) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | —                     | Long-lived token from `claude setup-token`, for scheduled (launchd/cron) runs |
 | `PRUNE_NO_VALUE`  | `0`                           | `1`: the note writer may answer `NO_VALUE` for turns with no long-term value (small talk, empty/aborted exchanges, templated batch jobs); they are soft-deleted, logged to `~/.openlynx/worklog/pruned.jsonl`, and restorable with `lynx-memory restore-pruned` |
 | `WORKLOG_DIR`     | `~/.openlynx/worklog`         | Where the journal is exported                      |
@@ -536,7 +540,7 @@ rm -rf ~/.openlynx                       # nuke directly (irreversible)
 
 Full history on [GitHub Releases](https://github.com/by123/OpenLynx/releases).
 
-- **0.8.1** — **Pruning** (`PRUNE_NO_VALUE=1` / `resummarize --prune`): turns the note writer judges worthless are soft-deleted and logged; `lynx-memory restore-pruned` undoes it. `lynx-memory resummarize`: rewrite every stored turn note and session note with the active backend (parallel, resumable, batched single-commit writes; session notes updated in place, duplicates dropped, vectors re-embedded with rate-limit pacing). Turn notes now keep the end of long replies.
+- **0.8.1** — **Usage cap** (`CLAUDE_USAGE_CAP`, default window `five_hour`): OpenLynx reads plan utilization from every `claude -p` call and stops calling Claude at the cap until the window resets. **Pruning** (`PRUNE_NO_VALUE=1` / `resummarize --prune`): turns the note writer judges worthless are soft-deleted and logged; `lynx-memory restore-pruned` undoes it. `lynx-memory resummarize`: rewrite every stored turn note and session note with the active backend (parallel, resumable, batched single-commit writes; session notes updated in place, duplicates dropped, vectors re-embedded with rate-limit pacing). Turn notes now keep the end of long replies.
 - **0.8.0** — **Work journal** (`lynx-memory worklog`): every store's history summarized by Claude into project × day units (work items with honest status, reusable facts, evidence) and rolling project cards; `backfill` for all history, fingerprint-based incremental runs, resumable staging, single-transaction writes; Markdown/JSON exports; **Work log** tab in the Web UI; project brief injected on a session's first prompt. **`claude` summarization backend** (headless `claude -p`, opt-in) for turn notes, session notes and the goal judge (deferred to the background worker). **`lynx-memory schedule`** installs the nightly job (launchd / cron) with automatic catch-up. Reliability: background workers no longer hold the store's replica lock during LLM calls; `lynx-memory sync reconcile` (and every journal run) merges rows stranded in the local fallback DB back into synced replicas; store discovery recognizes replica-only stores. Quality: harness noise (CLAUDE.md reminders, skill bodies, task notifications) is stripped before summarizing and no longer triggers recall; new typed note format (`[decision]`, `[pitfall]`, `[todo]` …); one session note per session, written from each reply's conclusion rather than its head.
 - **0.7.2** — Cross-process lock for the libSQL replica; set-based batch operations.
 - **0.7.1** — Soft-delete for turns and summaries, propagated through sync.

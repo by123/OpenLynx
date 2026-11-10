@@ -544,6 +544,12 @@ def normalize_unit_result(data: dict, idmap: Dict[str, str]) -> dict:
     }
 
 
+def _cap_hit() -> bool:
+    from . import claude_cli
+
+    return claude_cli.CAP_HIT.is_set()
+
+
 def _llm(system: str, user: str, *, fast: bool = False) -> Optional[Tuple[str, str]]:
     """One summarization call on the configured backend → (text, model)."""
     from .summarizer import _chat, active_provider
@@ -1365,6 +1371,10 @@ def run(
                     fail_streak = 0
                     log(f"  [{done_n}/{len(pending)}] {u.day} {u.project_name} ✓ "
                         f"{len(u.turns)} turns, {len(row.get('items') or [])} items ({dt:.0f}s)")
+                elif not abort.is_set() and _cap_hit():
+                    abort.set()
+                    stats.aborted = True
+                    log("  ! Claude usage cap reached — stopping; built units are kept, the rest resume next run")
                 elif not abort.is_set():
                     stats.units_failed += 1
                     fail_streak += 1

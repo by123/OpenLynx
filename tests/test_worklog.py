@@ -807,3 +807,53 @@ class PruningTest(unittest.TestCase):
         self.assertTrue(is_no_value("NO_VALUE"))
         self.assertTrue(is_no_value("`NO_VALUE`."))
         self.assertFalse(is_no_value("[todo] NO_VALUE handling in parser — fix later"))
+
+
+class UsageCapTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        for p in (mock.patch("lynx_memory.config.GLOBAL_DATA_DIR", Path(self._tmp.name)),
+                  mock.patch("lynx_memory.hooks._log.log")):
+            p.start()
+            self.addCleanup(p.stop)
+        from lynx_memory import claude_cli
+
+        claude_cli.CAP_HIT.clear()
+        self.addCleanup(claude_cli.CAP_HIT.clear)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stream(self, five, seven):
+        ev = {"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": five, "resetsAt": time.time() + 3600},
+            "seven_day": {"utilization": seven, "resetsAt": time.time() + 86400}}}}
+        res = {"type": "result", "result": "note", "is_error": False, "modelUsage": {"m": {}}}
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps(ev) + "\n" + json.dumps(res) + "\n", stderr="")
+
+    def test_cap_watches_five_hour_window_only_by_default(self):
+        from lynx_memory import claude_cli
+
+        with mock.patch.dict(os.environ, {"CLAUDE_USAGE_CAP": "80%"}), \
+                mock.patch.object(claude_cli, "claude_bin", return_value="/bin/claude"):
+            with mock.patch("subprocess.run", return_value=self._stream(0.30, 0.95)):
+                self.assertEqual(claude_cli.run("s", "u"), ("note", "m"))   # weekly 95% ignored
+            self.assertIsNone(claude_cli.capped())
+            with mock.patch("subprocess.run", return_value=self._stream(0.81, 0.10)):
+                self.assertEqual(claude_cli.run("s", "u"), ("note", "m"))   # this call reports 81%
+            self.assertIn("five_hour", claude_cli.capped())
+            with mock.patch("subprocess.run") as run:
+                self.assertIsNone(claude_cli.run("s", "u"))                 # refused, no spawn
+                run.assert_not_called()
+            self.assertTrue(claude_cli.CAP_HIT.is_set())
+            with mock.patch.dict(os.environ, {"CLAUDE_USAGE_CAP_WINDOWS": "seven_day"}):
+                self.assertIsNone(claude_cli.capped())
+
+    def test_no_cap_configured_never_refuses(self):
+        from lynx_memory import claude_cli
+
+        with mock.patch.dict(os.environ, {"CLAUDE_USAGE_CAP": ""}), \
+                mock.patch.object(claude_cli, "claude_bin", return_value="/bin/claude"), \
+                mock.patch("subprocess.run", return_value=self._stream(0.99, 0.99)):
+            self.assertEqual(claude_cli.run("s", "u"), ("note", "m"))
+            self.assertIsNone(claude_cli.capped())

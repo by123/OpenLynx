@@ -1505,6 +1505,21 @@ def cmd_worklog_status(args: argparse.Namespace) -> int:
     if st["staged"]:
         print(f"staged      : {st['staged']} result(s) waiting to be flushed (resumed next run)")
     print(f"backend     : {active_provider() or 'none configured'}")
+    from . import claude_cli
+
+    u = claude_cli.read_usage()
+    if u.get("windows"):
+        parts = []
+        for name, w in u["windows"].items():
+            try:
+                parts.append(f"{name} {float(w.get('utilization') or 0):.0%} (resets "
+                             f"{time.strftime('%m-%d %H:%M', time.localtime(float(w.get('resetsAt') or 0)))})")
+            except (TypeError, ValueError):
+                continue
+        cap = claude_cli.usage_cap()
+        print(f"claude usage: {', '.join(parts)}"
+              + (f" · cap {cap:.0%}" if cap else "")
+              + (f" · PAUSED: {claude_cli.capped()}" if claude_cli.capped() else ""))
     sch = schedule.status()
     print(f"schedule    : {'installed ' + ', '.join(sch.get('times', [])) if sch.get('installed') else 'not installed'}"
           + (f" (last exit {sch['last_exit']})" if sch.get("last_exit") else ""))

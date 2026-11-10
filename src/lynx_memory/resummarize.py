@@ -28,6 +28,12 @@ FLUSH_EVERY = 100
 MAX_CONSECUTIVE_FAILURES = 25
 
 
+def _cap_hit() -> bool:
+    from . import claude_cli
+
+    return claude_cli.CAP_HIT.is_set()
+
+
 def _open(data_dir: Path):
     from .storage import Memory
 
@@ -200,6 +206,10 @@ def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: 
                 stats["done"] += 1
                 with lock:
                     pending.append((tid, res[0], res[1]))
+            elif not abort.is_set() and _cap_hit():
+                abort.set()
+                stats["capped"] = True
+                log("  ! Claude usage cap reached — stopping (finished notes are saved; re-run later)")
             elif not abort.is_set():
                 stats["failed"] += 1
                 fail_streak += 1
@@ -305,6 +315,10 @@ def rewrite_sessions(data_dir: Path, *, jobs: int, force: bool, limit: Optional[
             if text:
                 fail_streak = 0
                 results.append((sid, text, nturns))
+            elif not abort.is_set() and _cap_hit():
+                abort.set()
+                stats["capped"] = True
+                log("  ! Claude usage cap reached — stopping (finished notes are saved; re-run later)")
             elif not abort.is_set():
                 stats["failed"] += 1
                 fail_streak += 1
@@ -417,14 +431,20 @@ def run(*, what: Tuple[str, ...] = ("turns", "sessions"), jobs: int = 16,
         f"{len(sources)} store(s) · jobs={jobs}")
     done_state = _load_done_sessions()
     report: Dict[str, Dict] = {}
+    from . import claude_cli
+
     for d in sources:
+        reason = claude_cli.capped()
+        if reason or claude_cli.CAP_HIT.is_set():
+            log(f"\n! {reason or 'Claude usage cap reached'} — stopping before {d}; re-run later to resume")
+            break
         log(f"\n[{d}]")
         load_env(d)
         r: Dict[str, Dict] = {}
         if "turns" in what:
             r["turns"] = rewrite_turns(d, provider=provider, model=model, jobs=jobs, force=force,
                                        limit=limit, dry_run=dry_run, log=log)
-        if "sessions" in what:
+        if "sessions" in what and not claude_cli.CAP_HIT.is_set():
             r["sessions"] = rewrite_sessions(d, jobs=jobs, force=force, limit=limit,
                                              dry_run=dry_run, done_state=done_state, log=log)
         report[str(d)] = r

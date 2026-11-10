@@ -214,7 +214,7 @@ lynx-memory worklog show --project app   # 某个项目的项目卡
 不落会话文件），所以总结过程永远不会把自己记成记忆。模型：`CLAUDE_MODEL`（默认 `sonnet`）用于工作日志单元、
 项目卡、会话笔记；`CLAUDE_FAST_MODEL`（默认 `haiku`）用于每轮笔记和目标判定。使用该后端时，目标相关性判定
 挪到后台进程执行（turn 先入库，判为无关再软删除），`Stop` hook 不会变慢。`SUMMARY_BACKEND=auto` 永远不会自动选
-`claude`——它消耗的是你的 Claude 套餐额度，需要显式开启。定时任务场景下请先 `claude setup-token`，把
+`claude`——它消耗的是你的 Claude 套餐额度，需要显式开启。设置 `CLAUDE_USAGE_CAP=0.8`，可避免 OpenLynx 用掉 5 小时窗口最后的 20%（`lynx-memory worklog status` 会显示当前用量）。定时任务场景下请先 `claude setup-token`，把
 `CLAUDE_CODE_OAUTH_TOKEN=…` 写进 `~/.openlynx/.env`；launchd 任务无法可靠地刷新钥匙串里的登录态。
 
 ## 每日日报
@@ -405,6 +405,8 @@ init`：基于 git remote 派生的 id 会把它绑定到同一个数据库，�
 | `CLAUDE_FAST_MODEL` | `haiku`                       | `claude` 后端：每轮笔记、目标判定 |
 | `CLAUDE_BIN`        | `PATH` 中的 `claude`          | Claude Code CLI 路径              |
 | `CLAUDE_TIMEOUT`    | `300`                         | 每次 `claude -p` 调用的超时（秒） |
+| `CLAUDE_USAGE_CAP`  | —                             | 例如 `0.8`：套餐用量窗口达到 80% 后，OpenLynx 停止所有 `claude -p` 调用直到窗口重置（用量取自每次调用返回的限额信息；批处理会安全停下、之后续跑，hook 只是暂不写笔记） |
+| `CLAUDE_USAGE_CAP_WINDOWS` | `five_hour`            | 上限监控哪些窗口（`five_hour`、`seven_day`，逗号分隔） |
 | `CLAUDE_CODE_OAUTH_TOKEN` | —                       | `claude setup-token` 生成的长期 token，供定时任务（launchd/cron）使用 |
 | `PRUNE_NO_VALUE`    | `0`                           | 设为 `1`：笔记模型可对没有长期价值的 turn（寒暄、空的或中断的交互、模板化批处理）回答 `NO_VALUE`，这些 turn 会被软删除并记录到 `~/.openlynx/worklog/pruned.jsonl`，可用 `lynx-memory restore-pruned` 恢复 |
 | `WORKLOG_DIR`       | `~/.openlynx/worklog`         | 工作日志导出目录                  |
@@ -502,7 +504,7 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 
 完整历史见 [GitHub Releases](https://github.com/by123/OpenLynx/releases)。
 
-- **0.8.1** — **裁剪无效信息**（`PRUNE_NO_VALUE=1` / `resummarize --prune`）：被判为无价值的 turn 软删除并记录，`lynx-memory restore-pruned` 可撤销。新增 `lynx-memory resummarize`：用当前后端重写所有逐轮笔记与会话笔记（并发、可续跑、分批单次提交；会话笔记原地更新并去重，按限速重算向量）。逐轮笔记现在会保留长回复的结尾。
+- **0.8.1** — **用量上限**（`CLAUDE_USAGE_CAP`，默认只看 `five_hour` 窗口）：从每次 `claude -p` 调用读取套餐用量，达到上限即停止调用、直到窗口重置。**裁剪无效信息**（`PRUNE_NO_VALUE=1` / `resummarize --prune`）：被判为无价值的 turn 软删除并记录，`lynx-memory restore-pruned` 可撤销。新增 `lynx-memory resummarize`：用当前后端重写所有逐轮笔记与会话笔记（并发、可续跑、分批单次提交；会话笔记原地更新并去重，按限速重算向量）。逐轮笔记现在会保留长回复的结尾。
 - **0.8.0** — **工作日志**（`lynx-memory worklog`）：把所有记忆库的历史由 Claude 总结成「项目 × 天」单元（带诚实状态的工作项、可复用知识、证据）和持续更新的项目卡；`backfill` 回填全部历史，按输入指纹增量运行，可断点续跑，单事务写入；导出 Markdown/JSON；Web UI 新增 **工作日志** 视图；会话第一条提问注入项目简报。新增 **`claude` 总结后端**（无头 `claude -p`，需显式开启），用于每轮笔记、会话笔记和目标判定（判定挪到后台进程）。**`lynx-memory schedule`** 安装每晚任务（launchd / cron），自动补跑。可靠性：后台进程调 LLM 时不再占用副本锁；`lynx-memory sync reconcile`（以及每次工作日志运行）把滞留在本地兜底库的行合并回同步副本；记忆库发现能识别只有副本的库。质量：总结前清洗 CLAUDE.md 注入、skill 正文、task-notification 等噪音，这类消息也不再触发召回；笔记改用带类型的格式（`[decision]`、`[pitfall]`、`[todo]` …）；每个会话只保留一份会话笔记，且取材于回复结尾的结论而不是开头。
 - **0.7.2** — libSQL 副本的跨进程锁；批量操作改为集合式写入。
 - **0.7.1** — turn 与摘要支持软删除，并随同步传播。

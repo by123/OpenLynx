@@ -22,6 +22,13 @@ Env vars:
   - CLAUDE_MODEL        model for work records / day logs / cards (default: sonnet)
   - CLAUDE_FAST_MODEL   model for per-turn summaries + goal judge (default: haiku)
   - CLAUDE_TIMEOUT      seconds per call (default: 300)
+  - CLAUDE_USAGE_CAP    stop calling Claude once the plan's usage window
+                        reaches this utilization, e.g. 0.8 or 80% — until that
+                        window resets.
+  - CLAUDE_USAGE_CAP_WINDOWS  which windows the cap watches, comma-separated
+                        (default: five_hour; e.g. "five_hour,seven_day"). Usage is read from each
+                        call's `rate_limit_event` and shared across processes
+                        via <global store>/db/claude_usage.json.
 """
 from __future__ import annotations
 
@@ -30,6 +37,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -53,6 +62,79 @@ _PARENT_SESSION_ENV = (
 _NO_HOOKS_SETTINGS = json.dumps({"disableAllHooks": True})
 
 _LAST_ERROR = ""
+
+# Set once a call is refused because the plan usage cap was reached; batch
+# jobs check it to stop submitting work (results so far are kept).
+CAP_HIT = threading.Event()
+_usage_lock = threading.Lock()
+
+
+def usage_cap() -> Optional[float]:
+    raw = os.environ.get("CLAUDE_USAGE_CAP", "").strip().rstrip("%")
+    if not raw:
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    if v > 1:
+        v /= 100.0
+    return v if 0 < v <= 1 else None
+
+
+def usage_path() -> Path:
+    from . import config
+
+    return config.GLOBAL_DATA_DIR / "db" / "claude_usage.json"
+
+
+def read_usage() -> dict:
+    try:
+        return json.loads(usage_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_usage(info: dict) -> None:
+    windows = info.get("unifiedWindows") or {}
+    if not windows and info.get("rateLimitType"):
+        windows = {info["rateLimitType"]: {"utilization": info.get("utilization"),
+                                           "resetsAt": info.get("resetsAt")}}
+    if not windows:
+        return
+    data = {"seen_at": time.time(), "windows": windows}
+    p = usage_path()
+    try:
+        with _usage_lock:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def capped() -> Optional[str]:
+    """Why calls are currently refused (a window at/over the cap that has not
+    reset yet), or None."""
+    cap = usage_cap()
+    if cap is None:
+        return None
+    watched = {w.strip() for w in os.environ.get("CLAUDE_USAGE_CAP_WINDOWS", "five_hour").split(",")
+               if w.strip()}
+    now = time.time()
+    for name, w in (read_usage().get("windows") or {}).items():
+        if name not in watched:
+            continue
+        try:
+            util = float(w.get("utilization") or 0)
+            reset = float(w.get("resetsAt") or 0)
+        except (TypeError, ValueError):
+            continue
+        if util >= cap and reset > now:
+            when = time.strftime("%m-%d %H:%M", time.localtime(reset))
+            return f"Claude {name} usage {util:.0%} ≥ cap {cap:.0%} (resets {when})"
+    return None
 
 
 def last_error() -> str:
@@ -115,7 +197,8 @@ def build_command(system: str, model: str) -> list:
         "--no-session-persistence",
         "--strict-mcp-config",
         "--settings", _NO_HOOKS_SETTINGS,
-        "--output-format", "json",
+        # stream-json carries a rate_limit_event with plan utilization
+        "--output-format", "stream-json", "--verbose",
     ]
 
 
@@ -142,6 +225,12 @@ def run(
     exe = claude_bin()
     if not exe:
         _fail("claude executable not found (set CLAUDE_BIN)")
+        return None
+    reason = capped()
+    if reason:
+        if not CAP_HIT.is_set():
+            _fail(f"usage cap reached — {reason}; not calling Claude")
+        CAP_HIT.set()
         return None
     model = model or model_for(fast)
     cmd = build_command(system, model)
@@ -170,10 +259,19 @@ def run(
         return None
 
     out = (proc.stdout or "").strip()
-    try:
-        data = json.loads(out[out.find("{"):]) if "{" in out else {}
-    except ValueError:
-        data = {}
+    data: dict = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("type") == "rate_limit_event":
+            _record_usage(ev.get("rate_limit_info") or {})
+        elif ev.get("type") == "result" or "result" in ev and "is_error" in ev:
+            data = ev
     if proc.returncode != 0 or not data or data.get("is_error"):
         detail = data.get("result") if data else (proc.stderr or out)[:300]
         _fail(f"exit={proc.returncode} model={model}: {detail}")
