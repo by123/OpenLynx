@@ -114,8 +114,11 @@ def summarize_session(data_dir, session_id: str) -> int:
     """Worker body: read → (store closed) → LLM → write. Returns an exit code."""
     from ..config import load_env
     from ..storage import Memory
+    from ..summarizer import is_enabled
 
     load_env(data_dir)
+    if not is_enabled():  # SUMMARY_ENABLED=0 switches off every LLM summary
+        return 0
     mem = Memory(data_dir=data_dir)
     try:
         turns = mem.get_session_turns(session_id)
@@ -193,7 +196,9 @@ def _main() -> int:
         finally:
             mem.close()
 
-        if session_id:
+        from ..summarizer import is_enabled
+
+        if session_id and is_enabled():
             _spawn_worker(data_dir, session_id)
     except Exception as e:
         log(f"[on_session_end] ERROR: {e}\n{traceback.format_exc()}")

@@ -857,3 +857,18 @@ class UsageCapTest(unittest.TestCase):
                 mock.patch("subprocess.run", return_value=self._stream(0.99, 0.99)):
             self.assertEqual(claude_cli.run("s", "u"), ("note", "m"))
             self.assertIsNone(claude_cli.capped())
+
+
+class SummaryKillSwitchTest(unittest.TestCase):
+    def test_session_notes_respect_summary_enabled(self):
+        from lynx_memory.hooks import on_session_end
+
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _insert_turn(d, "a", "S", time.time(), "q1", "a1")
+            _insert_turn(d, "b", "S", time.time() + 1, "q2", "a2")
+            with mock.patch.dict(os.environ, {"SUMMARY_ENABLED": "0"}), \
+                    mock.patch("lynx_memory.config.load_env", lambda *a, **k: None), \
+                    mock.patch.object(on_session_end, "_summarize") as summ:
+                self.assertEqual(on_session_end.summarize_session(d, "S"), 0)
+                summ.assert_not_called()
