@@ -78,13 +78,27 @@ def _rewrite_turn(provider: str, model: Optional[str], goal: Optional[str],
     return (res[0], res[2] or provider) if res else None
 
 
-def _flush_turn_notes(data_dir: Path, rows: List[Tuple[str, str, str]], source: str) -> None:
-    """One UPDATE … CASE statement per chunk, one commit for the batch."""
-    if not rows:
+def _flush_turn_notes(data_dir: Path, rows: List[Tuple[str, str, str]], source: str,
+                      prune: Optional[List[dict]] = None) -> None:
+    """One UPDATE … CASE statement per chunk (+ one set-based soft-delete for
+    pruned turns), one commit for the whole batch."""
+    prune = prune or []
+    if not rows and not prune:
         return
     now = time.time()
     mem = _open(data_dir)
     try:
+        if prune:
+            ids = [p["turn_id"] for p in prune]
+            for i in range(0, len(ids), 800):
+                ch = ids[i : i + 800]
+                mem.db.execute(
+                    f"UPDATE turns SET deleted_at = ? WHERE id IN ({','.join('?' * len(ch))}) "
+                    "AND deleted_at IS NULL", [now, *ch])
+            try:
+                mem.turns.delete(ids=ids)
+            except Exception:
+                pass
         per = 150  # 5 bound params per row, well under SQLite's limit
         for i in range(0, len(rows), per):
             chunk = rows[i : i + per]
@@ -106,6 +120,10 @@ def _flush_turn_notes(data_dir: Path, rows: List[Tuple[str, str, str]], source: 
         mem.db.commit()
     finally:
         mem.close()
+    if prune:
+        from . import pruning
+
+        pruning.record(prune)
 
 
 def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: int,
@@ -120,7 +138,7 @@ def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: 
             where += " AND (summary IS NULL OR summary_source IS NULL OR summary_source != ?)"
             params.append(provider)
         rows = mem.db.execute(
-            "SELECT id, user_msg, substr(assistant_msg, 1, 3000) AS a_head, "
+            "SELECT id, session_id, user_msg, substr(assistant_msg, 1, 3000) AS a_head, "
             "substr(assistant_msg, -7000) AS a_tail, length(assistant_msg) AS a_len "
             f"FROM turns WHERE {where} ORDER BY ts DESC",
             params,
@@ -136,7 +154,14 @@ def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: 
     if dry_run or not todo:
         return stats
 
+    from . import pruning
+
+    prune_on = pruning.prune_enabled()
+    by_id = {r["id"]: r for r in todo}
+    store_key = str(data_dir.resolve())
     pending: List[Tuple[str, str, str]] = []
+    pruned: List[dict] = []
+    stats["pruned"] = 0
     lock = threading.Lock()
     last_flush = time.time()
     fail_streak = 0
@@ -146,6 +171,12 @@ def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: 
         if abort.is_set():
             return r["id"], None
         u, a = _turn_body(r["user_msg"], r["a_head"] or "", r["a_tail"] or "", int(r["a_len"] or 0))
+        if not a.strip():
+            return r["id"], "SKIP"
+        if not u.strip():
+            # e.g. a bare subagent <task-notification>: the reply may still
+            # carry real work (a synthesis of the agent's findings)
+            u = "[no user text — the turn was triggered by a harness/system message]"
         try:
             return r["id"], _rewrite_turn(provider, model, goal, u, a)
         except Exception:
@@ -156,7 +187,15 @@ def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: 
         futs = [pool.submit(work, r) for r in todo]
         for n, fut in enumerate(as_completed(futs), 1):
             tid, res = fut.result()
-            if res:
+            if res == "SKIP":
+                stats["skipped"] = stats.get("skipped", 0) + 1
+            elif res and prune_on and pruning.is_no_value(res[0]):
+                fail_streak = 0
+                stats["pruned"] += 1
+                r0 = by_id[tid]
+                pruned.append({"store": store_key, "turn_id": tid, "session_id": r0.get("session_id"),
+                               "source": "resummarize", "user": (r0.get("user_msg") or "")[:200]})
+            elif res:
                 fail_streak = 0
                 stats["done"] += 1
                 with lock:
@@ -167,14 +206,18 @@ def rewrite_turns(data_dir: Path, *, provider: str, model: Optional[str], jobs: 
                 if fail_streak >= MAX_CONSECUTIVE_FAILURES:
                     abort.set()
                     log(f"  ! {fail_streak} consecutive failures — stopping this store (re-run to resume)")
-            if len(pending) >= FLUSH_EVERY or (pending and time.time() - last_flush > 90):
+            if len(pending) + len(pruned) >= FLUSH_EVERY or (
+                (pending or pruned) and time.time() - last_flush > 90
+            ):
                 batch, pending = pending, []
-                _flush_turn_notes(data_dir, batch, provider)
+                pbatch, pruned = pruned, []
+                _flush_turn_notes(data_dir, batch, provider, pbatch)
                 last_flush = time.time()
             if n % 50 == 0 or n == len(todo):
                 rate = n / max(1e-6, time.time() - t0) * 60
-                log(f"  turns {n}/{len(todo)} ({stats['failed']} failed, {rate:.0f}/min)")
-    _flush_turn_notes(data_dir, pending, provider)
+                log(f"  turns {n}/{len(todo)} ({stats['pruned']} pruned, {stats['failed']} failed, "
+                    f"{rate:.0f}/min)")
+    _flush_turn_notes(data_dir, pending, provider, pruned)
     return stats
 
 

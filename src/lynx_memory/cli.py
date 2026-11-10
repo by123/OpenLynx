@@ -1551,6 +1551,8 @@ def cmd_worklog_export(args: argparse.Namespace) -> int:
 def cmd_resummarize(args: argparse.Namespace) -> int:
     from . import resummarize
 
+    if args.prune:
+        os.environ["PRUNE_NO_VALUE"] = "1"
     what = tuple(w.strip() for w in args.what.split(",") if w.strip())
     try:
         report = resummarize.run(
@@ -1562,6 +1564,10 @@ def cmd_resummarize(args: argparse.Namespace) -> int:
         _print_err(str(exc))
         return 1
     failed = sum((r.get(k) or {}).get("failed", 0) for r in report.values() for k in ("turns", "sessions"))
+    pruned = sum((r.get("turns") or {}).get("pruned", 0) for r in report.values())
+    if pruned:
+        print(f"  pruned {pruned} no-value turn(s) — listed in ~/.openlynx/worklog/pruned.jsonl; "
+              "undo with `lynx-memory restore-pruned`")
     done = sum((r.get(k) or {}).get("done", 0) for r in report.values() for k in ("turns", "sessions"))
     if args.dry_run:
         return 0
@@ -1569,6 +1575,22 @@ def cmd_resummarize(args: argparse.Namespace) -> int:
         _print_warn(f"{done} note(s) rewritten, {failed} failed — re-run to retry just those.")
         return 1
     _print_ok(f"{done} note(s) rewritten.")
+    return 0
+
+
+def cmd_restore_pruned(args: argparse.Namespace) -> int:
+    from . import pruning
+
+    load_env(GLOBAL_DATA_DIR)
+    since = None
+    if args.since:
+        since = time.mktime(time.strptime(args.since, "%Y-%m-%d"))
+    st = pruning.restore(store=args.store, since=since, dry_run=args.dry_run,
+                         log=lambda m: print(m, flush=True))
+    if args.dry_run:
+        _print_ok(f"{st['selected']} pruned turn(s) would be restored.")
+    else:
+        _print_ok(f"restored {st['restored']} turn(s).")
     return 0
 
 
@@ -1879,7 +1901,15 @@ def main() -> None:
     sp.add_argument("--limit", type=int, default=None, help="At most N turns / sessions per store")
     sp.add_argument("--store", default=None, help="Only stores whose path contains this text")
     sp.add_argument("--dry-run", action="store_true", help="Only count what would be rewritten")
+    sp.add_argument("--prune", action="store_true",
+                    help="Soft-delete turns the model judges to have no long-term value (same as PRUNE_NO_VALUE=1)")
     sp.set_defaults(func=cmd_resummarize)
+
+    sp = sub.add_parser("restore-pruned", help="Undo pruning: undelete + re-embed pruned turns")
+    sp.add_argument("--store", default=None, help="Only stores whose path contains this text")
+    sp.add_argument("--since", default=None, help="Only turns pruned on/after YYYY-MM-DD")
+    sp.add_argument("--dry-run", action="store_true", help="Only list what would be restored")
+    sp.set_defaults(func=cmd_restore_pruned)
 
     sp = sub.add_parser("schedule", help="Run the work journal automatically (launchd / cron)")
     sp.set_defaults(func=cmd_schedule)

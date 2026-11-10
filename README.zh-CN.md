@@ -109,6 +109,7 @@ Codex 的 `additionalContext` 字段会被完整尊重，记忆注入方式与 C
 | `lynx-memory goal`         | 查看 / 设置 / 清除按 scope 划分的目标（`goal show \| set "…" \| clear`，可选 `--scope`）。 |
 | `lynx-memory worklog`      | 工作日志：`backfill`（全部历史）、`run`（最近 14 天，定时任务用它）、`status`、`show [--day D \| --project P]`、`export`。详见 [工作日志](#工作日志)。 |
 | `lynx-memory resummarize`  | 用当前后端重写所有历史的逐轮笔记和会话笔记（例如把旧模型写的历史全部换成 Claude 写）：`--jobs N` 并发，可断点续跑（已重写的自动跳过），`--what turns,sessions`，`--dry-run`。 |
+| `lynx-memory restore-pruned` | 撤销裁剪：恢复被判为无价值而删除的 turn，并重新向量化（`--store`、`--since`、`--dry-run`）。 |
 | `lynx-memory schedule`     | 自动运行工作日志：`install [--at HH:MM …]`（默认 20:30 + 08:30）、`uninstall`、`status`、`run-now`——macOS 用 launchd，Linux 用 cron。 |
 | `lynx-memory daily`        | 汇总项目当天的对话生成日报，可选推送到手机（`--notify`、`--all`、`--project`、`--since-hours`）。 |
 | `lynx-memory doctor`       | 自检 Python、依赖、API key、`settings.json`。                                    |
@@ -179,7 +180,8 @@ echo "SUMMARY_BACKEND=claude" >> ~/.openlynx/.env   # 用无头 Claude Code 总�
 lynx-memory worklog backfill --dry-run   # 先看要建多少单元、调多少次 LLM
 lynx-memory worklog backfill --jobs 5    # 总结全部历史（可断点续跑）
 lynx-memory schedule install             # 之后每天 20:30 + 08:30 自动跑
-lynx-memory resummarize --jobs 24        # 可选：用 Claude 重写所有旧的逐轮 / 会话笔记
+lynx-memory resummarize --jobs 16        # 可选：用 Claude 重写所有旧的逐轮 / 会话笔记
+                                         #   （加 --prune 顺带删除被判为无价值的 turn）
 
 lynx-memory worklog status               # 覆盖范围、后端、定时任务
 lynx-memory worklog show                 # 今天的日志
@@ -404,6 +406,7 @@ init`：基于 git remote 派生的 id 会把它绑定到同一个数据库，�
 | `CLAUDE_BIN`        | `PATH` 中的 `claude`          | Claude Code CLI 路径              |
 | `CLAUDE_TIMEOUT`    | `300`                         | 每次 `claude -p` 调用的超时（秒） |
 | `CLAUDE_CODE_OAUTH_TOKEN` | —                       | `claude setup-token` 生成的长期 token，供定时任务（launchd/cron）使用 |
+| `PRUNE_NO_VALUE`    | `0`                           | 设为 `1`：笔记模型可对没有长期价值的 turn（寒暄、空的或中断的交互、模板化批处理）回答 `NO_VALUE`，这些 turn 会被软删除并记录到 `~/.openlynx/worklog/pruned.jsonl`，可用 `lynx-memory restore-pruned` 恢复 |
 | `WORKLOG_DIR`       | `~/.openlynx/worklog`         | 工作日志导出目录                  |
 | `WORKLOG_EXCLUDE`   | —                             | 逗号分隔的项目路径 glob，命中的不进工作日志 |
 | `WORKLOG_INJECT_BRIEF` | `1`                        | 会话第一条提问时注入项目卡        |
@@ -499,7 +502,7 @@ rm -rf ~/.openlynx                       # 直接 rm（不可逆）
 
 完整历史见 [GitHub Releases](https://github.com/by123/OpenLynx/releases)。
 
-- **0.8.1** — 新增 `lynx-memory resummarize`：用当前后端重写所有逐轮笔记与会话笔记（并发、可续跑、分批单次提交；会话笔记原地更新并去重，按限速重算向量）。逐轮笔记现在会保留长回复的结尾。
+- **0.8.1** — **裁剪无效信息**（`PRUNE_NO_VALUE=1` / `resummarize --prune`）：被判为无价值的 turn 软删除并记录，`lynx-memory restore-pruned` 可撤销。新增 `lynx-memory resummarize`：用当前后端重写所有逐轮笔记与会话笔记（并发、可续跑、分批单次提交；会话笔记原地更新并去重，按限速重算向量）。逐轮笔记现在会保留长回复的结尾。
 - **0.8.0** — **工作日志**（`lynx-memory worklog`）：把所有记忆库的历史由 Claude 总结成「项目 × 天」单元（带诚实状态的工作项、可复用知识、证据）和持续更新的项目卡；`backfill` 回填全部历史，按输入指纹增量运行，可断点续跑，单事务写入；导出 Markdown/JSON；Web UI 新增 **工作日志** 视图；会话第一条提问注入项目简报。新增 **`claude` 总结后端**（无头 `claude -p`，需显式开启），用于每轮笔记、会话笔记和目标判定（判定挪到后台进程）。**`lynx-memory schedule`** 安装每晚任务（launchd / cron），自动补跑。可靠性：后台进程调 LLM 时不再占用副本锁；`lynx-memory sync reconcile`（以及每次工作日志运行）把滞留在本地兜底库的行合并回同步副本；记忆库发现能识别只有副本的库。质量：总结前清洗 CLAUDE.md 注入、skill 正文、task-notification 等噪音，这类消息也不再触发召回；笔记改用带类型的格式（`[decision]`、`[pitfall]`、`[todo]` …）；每个会话只保留一份会话笔记，且取材于回复结尾的结论而不是开头。
 - **0.7.2** — libSQL 副本的跨进程锁；批量操作改为集合式写入。
 - **0.7.1** — turn 与摘要支持软删除，并随同步传播。

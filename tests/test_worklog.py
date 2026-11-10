@@ -735,3 +735,75 @@ class ResummarizeTest(unittest.TestCase):
             m.close()
         self.assertEqual([tuple(r) for r in live], [("old2", "中文会话笔记")])
         self.assertIn("S", state[str(self.d.resolve())])
+
+
+class PruningTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self._tmp.name) / "store"
+        self.d.mkdir()
+        for p in (mock.patch("lynx_memory.config.load_env", lambda *a, **k: None),
+                  mock.patch("lynx_memory.storage._base.embed_one", return_value=FAKE_VEC),
+                  mock.patch.dict(os.environ, {"PRUNE_NO_VALUE": "1",
+                                               "WORKLOG_DIR": str(Path(self._tmp.name) / "wl")})):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _live_ids(self):
+        m = _memory(self.d)
+        try:
+            return {r[0] for r in m.db.execute("SELECT id FROM turns WHERE deleted_at IS NULL")}
+        finally:
+            m.close()
+
+    def test_prompt_mentions_no_value_only_when_enabled(self):
+        from lynx_memory import summarizer
+
+        self.assertIn("NO_VALUE", summarizer._system_for(None))
+        with mock.patch.dict(os.environ, {"PRUNE_NO_VALUE": "0"}):
+            self.assertNotIn("NO_VALUE", summarizer._system_for(None))
+
+    def test_resummarize_prunes_logs_and_restores(self):
+        from lynx_memory import pruning, resummarize
+
+        now = time.time()
+        _insert_turn(self.d, "keep", "s", now, "fix the lock bug", "fixed in _base.py")
+        _insert_turn(self.d, "junk", "s", now + 1, "hi", "hello!")
+
+        def fake_run(system, user, model=None, fast=False, timeout=None):
+            return ("NO_VALUE" if "hello!" in user else "[pitfall] lock note"), "claude-sonnet-x"
+
+        with mock.patch("lynx_memory.claude_cli.run", side_effect=fake_run):
+            st = resummarize.rewrite_turns(self.d, provider="claude", model="sonnet", jobs=2, force=False,
+                                           limit=None, dry_run=False, log=lambda m: None)
+        self.assertEqual((st["done"], st["pruned"]), (1, 1))
+        self.assertEqual(self._live_ids(), {"keep"})
+        entries = pruning.load()
+        self.assertEqual([e["turn_id"] for e in entries], ["junk"])
+        self.assertEqual(entries[0]["user"], "hi")
+
+        with mock.patch("lynx_memory.resummarize._embed_paced", side_effect=lambda t, log: [FAKE_VEC] * len(t)):
+            rs = pruning.restore(log=lambda m: None)
+        self.assertEqual(rs["restored"], 1)
+        self.assertEqual(self._live_ids(), {"keep", "junk"})
+        self.assertEqual(pruning.load(), [])
+
+    def test_hook_worker_prunes_no_value_turn(self):
+        from lynx_memory import pruning, summarizer
+
+        _insert_turn(self.d, "t1", "s", time.time(), "thanks", "you're welcome")
+        with mock.patch.object(summarizer, "summarize_with_source", return_value=("NO_VALUE", "claude", "haiku")), \
+                mock.patch.dict(os.environ, {"SUMMARY_ENABLED": "1"}):
+            self.assertEqual(summarizer._run_one(str(self.d), "t1"), 0)
+        self.assertEqual(self._live_ids(), set())
+        self.assertEqual(pruning.load()[0]["source"], "hook")
+
+    def test_no_value_detection(self):
+        from lynx_memory.pruning import is_no_value
+
+        self.assertTrue(is_no_value("NO_VALUE"))
+        self.assertTrue(is_no_value("`NO_VALUE`."))
+        self.assertFalse(is_no_value("[todo] NO_VALUE handling in parser — fix later"))

@@ -114,12 +114,16 @@ Format:
 
 
 def _system_for(goal: Optional[str]) -> str:
-    """Base summary system prompt, optionally focused on the user's goal."""
+    """Base summary system prompt, optionally focused on the user's goal and,
+    with PRUNE_NO_VALUE=1, allowed to answer NO_VALUE (see pruning.py)."""
+    from .pruning import PRUNE_CLAUSE, prune_enabled
+
+    base = _SYSTEM + (PRUNE_CLAUSE if prune_enabled() else "")
     goal = (goal or "").strip()
     if not goal:
-        return _SYSTEM
+        return base
     return (
-        f"{_SYSTEM}\n\n"
+        f"{base}\n\n"
         f"The user's overarching goal for this work is:\n{goal}\n"
         "Give priority to information that advances or relates to this goal; "
         "spend fewer words on details unrelated to it."
@@ -576,6 +580,19 @@ def _run_one(data_dir: str, turn_id: str, judge: bool = False) -> int:
     if not result:
         return 2
     summary, source, used_model = result
+    from . import pruning
+
+    if pruning.prune_enabled() and pruning.is_no_value(summary):
+        mem = Memory(data_dir=ddir)
+        try:
+            pruned = mem.forget_turn_if_unchanged(turn_id, t["ts"])
+        finally:
+            mem.close()
+        if pruned:
+            pruning.record([{"store": str(ddir.resolve()), "turn_id": turn_id,
+                             "session_id": t.get("session_id"), "source": "hook",
+                             "user": (t.get("user_msg") or "")[:200]}])
+        return 0
     mem = Memory(data_dir=ddir)
     try:
         mem.set_summary(turn_id, summary, source=source, model=used_model)
